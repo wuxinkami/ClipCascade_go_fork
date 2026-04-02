@@ -43,10 +43,12 @@ info "准备 Android Docker 构建环境..."
 docker_compose build android-builder
 
 info "在容器中执行 Android 原生构建..."
+# 以 root 运行容器以避免 AAPT2 daemon 权限问题，构建完成后 chown 产物
 docker_compose run --rm -T \
-    -u "$(id -u):$(id -g)" \
     -e HOME=/tmp/docker-home \
+    -e HOST_UID="$(id -u)" \
+    -e HOST_GID="$(id -g)" \
     android-builder \
-    bash -c "mkdir -p /tmp/docker-home && /workspace/scripts/build_android_in_container.sh"
+    bash -c "mkdir -p /tmp/docker-home && /workspace/scripts/build_android_in_container.sh && chown -R \${HOST_UID}:\${HOST_GID} /workspace/build /workspace/.gradle-user-home /workspace/.cache 2>/dev/null || true"
 
 info "✅ Android 原生保活版构建完成"

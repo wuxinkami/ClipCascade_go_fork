@@ -42,6 +42,8 @@ info "✅ Go 引擎编译成功: mobile/android/app/libs/engine.aar"
 info "第二步：使用 Gradle 组装 Android Kotlin 壳应用..."
 cd mobile/android
 chmod +x ./gradlew
+# 修复 Docker 挂载卷中 Gradle 缓存的 AAPT2 缺少执行权限的问题
+find "$GRADLE_USER_HOME" -name 'aapt2' -type f -exec chmod +x {} \; 2>/dev/null || true
 ./gradlew --no-daemon clean assembleDebug assembleRelease
 cd "$ROOT_DIR"
 
@@ -72,4 +74,12 @@ if [[ -f "$APK_DEBUG_DEST" ]]; then
 fi
 if [[ -f "$APK_RELEASE_UNSIGNED_DEST" ]]; then
     info "📦 发布包（Unsigned）: $APK_RELEASE_UNSIGNED_DEST"
+fi
+
+# 将容器中以 root 创建的文件权限归还给宿主用户
+if [[ -n "${HOST_UID:-}" && -n "${HOST_GID:-}" ]]; then
+    info "修正文件权限 (UID=$HOST_UID, GID=$HOST_GID)..."
+    chown -R "$HOST_UID:$HOST_GID" "$BUILD_DIR" "$GRADLE_USER_HOME" "$GOCACHE" "$GOMODCACHE" \
+        "$ROOT_DIR/mobile/android/app/libs" "$ROOT_DIR/mobile/android/app/build" \
+        "$ROOT_DIR/mobile/android/.gradle" 2>/dev/null || true
 fi

@@ -1,0 +1,1484 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClipCascade 控制中心</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5efe6;
+      --panel: rgba(255, 252, 246, 0.98);
+      --ink: #1f2430;
+      --muted: #6b7280;
+      --line: rgba(31, 36, 48, 0.10);
+      --line-strong: rgba(31, 36, 48, 0.18);
+      --accent: #1f5c3b;
+      --accent-soft: rgba(31, 92, 59, 0.10);
+      --warn: #9a3412;
+      --warn-soft: rgba(154, 52, 18, 0.08);
+      --shadow: 0 16px 40px rgba(31, 36, 48, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(31, 92, 59, 0.11), transparent 30%),
+        radial-gradient(circle at top right, rgba(154, 52, 18, 0.08), transparent 24%),
+        linear-gradient(180deg, #faf7f2 0%, var(--bg) 100%);
+      min-height: 100vh;
+    }
+    main {
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 24px 18px 40px;
+    }
+    h1, h2, h3, p { margin: 0; }
+    header { margin-bottom: 14px; }
+    h1 {
+      font-size: clamp(1.8rem, 3vw, 2.7rem);
+      letter-spacing: 0.01em;
+      font-weight: 700;
+    }
+    .sub {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 0.96rem;
+    }
+    .status {
+      min-height: 22px;
+      margin: 10px 0 14px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    .status.error { color: var(--warn); }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .metric-card { padding: 16px 18px; }
+    .metric-label {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+    }
+    .metric-value {
+      margin-top: 8px;
+      font-size: 1.18rem;
+      font-weight: 700;
+      line-height: 1.3;
+      word-break: break-word;
+    }
+    .metric-sub {
+      margin-top: 10px;
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+    .action-panel {
+      margin-bottom: 14px;
+      padding: 14px 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .action-group {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .action-note {
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+    .section-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .stack {
+      display: grid;
+      gap: 14px;
+    }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(31, 36, 48, 0.02);
+    }
+    .section-head h2 {
+      font-size: 1rem;
+      font-weight: 700;
+    }
+    .section-meta {
+      color: var(--muted);
+      font-size: 0.86rem;
+    }
+    .panel-body {
+      padding: 14px 16px 16px;
+    }
+    .kv-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .kv {
+      padding: 12px 13px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(31, 36, 48, 0.02);
+    }
+    .kv-label {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+    .kv-value {
+      margin-top: 6px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    .settings-form {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+    .field label {
+      font-size: 0.82rem;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .field input {
+      width: 100%;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      padding: 9px 11px;
+      font: inherit;
+      background: #fff;
+      color: var(--ink);
+    }
+    .field.checkbox {
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 8px;
+      padding-top: 24px;
+    }
+    .field.checkbox input {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+    }
+    .field.full { grid-column: 1 / -1; }
+    .settings-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+    }
+    .hint {
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    .table-wrap { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 760px;
+    }
+    thead th {
+      padding: 12px 14px;
+      text-align: left;
+      font-size: 0.8rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: rgba(31, 36, 48, 0.03);
+      border-bottom: 1px solid var(--line-strong);
+    }
+    tbody td {
+      padding: 12px 14px;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line);
+      font-size: 0.93rem;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr.active { background: var(--accent-soft); }
+    .summary-main {
+      font-weight: 600;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    .summary-sub {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 0.83rem;
+      word-break: break-word;
+    }
+    .summary-error {
+      margin-top: 6px;
+      color: var(--warn);
+      font-size: 0.82rem;
+    }
+    .tags {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 0.78rem;
+      background: rgba(31, 36, 48, 0.06);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .tag.active {
+      background: rgba(31, 92, 59, 0.16);
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .tag.warn {
+      background: var(--warn-soft);
+      color: var(--warn);
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+    .event-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 10px;
+    }
+    .event-item {
+      padding: 12px 13px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(31, 36, 48, 0.02);
+    }
+    .event-head {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      margin-bottom: 6px;
+    }
+    .event-kind {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .event-time {
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+    .event-message {
+      font-size: 0.92rem;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+    .empty {
+      padding: 20px;
+      text-align: center;
+      color: var(--muted);
+    }
+    button {
+      appearance: none;
+      border: 1px solid rgba(31, 36, 48, 0.16);
+      background: white;
+      color: var(--ink);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font: inherit;
+      font-size: 0.86rem;
+      cursor: pointer;
+      transition: background 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+    }
+    button:hover:not(:disabled) {
+      box-shadow: 0 8px 18px rgba(31, 36, 48, 0.08);
+      border-color: rgba(31, 36, 48, 0.28);
+    }
+    button.primary {
+      background: #1f5c3b;
+      border-color: #1f5c3b;
+      color: #fffdf7;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .foot {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    @media (max-width: 1024px) {
+      .dashboard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .section-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+      main { padding: 18px 12px 28px; }
+      h1 { font-size: 1.65rem; }
+      .dashboard-grid { grid-template-columns: 1fr; }
+      .settings-form, .kv-grid { grid-template-columns: 1fr; }
+    }
+    .setup-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background:
+        radial-gradient(circle at top left, rgba(31, 92, 59, 0.18), transparent 40%),
+        radial-gradient(circle at bottom right, rgba(154, 52, 18, 0.12), transparent 40%),
+        rgba(31, 36, 48, 0.6);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      animation: setupFadeIn 400ms ease;
+    }
+    @keyframes setupFadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    @keyframes setupSlideUp {
+      from { transform: translateY(24px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .setup-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      box-shadow: 0 24px 80px rgba(31, 36, 48, 0.24);
+      padding: 36px 32px 28px;
+      width: 100%;
+      max-width: 440px;
+      margin: 16px;
+      animation: setupSlideUp 500ms ease 100ms both;
+    }
+    .setup-card h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .setup-card .setup-sub {
+      color: var(--muted);
+      font-size: 0.92rem;
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+    .setup-card .field { margin-bottom: 14px; }
+    .setup-card .field label {
+      display: block;
+      font-size: 0.82rem;
+      color: var(--muted);
+      font-weight: 600;
+      margin-bottom: 5px;
+    }
+    .setup-card .field input {
+      width: 100%;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+      background: #fff;
+      color: var(--ink);
+      transition: border-color 200ms ease, box-shadow 200ms ease;
+    }
+    .setup-card .field input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .setup-card .setup-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    .setup-card .setup-actions button {
+      flex: 1;
+      padding: 11px 16px;
+      font-size: 0.92rem;
+      border-radius: 12px;
+    }
+    .setup-status {
+      margin-top: 12px;
+      font-size: 0.86rem;
+      text-align: center;
+      min-height: 20px;
+    }
+    .setup-status.ok { color: var(--accent); }
+    .setup-status.err { color: var(--warn); }
+  </style>
+</head>
+<body>
+  <!-- 首次配置引导层 -->
+  <div id="setupOverlay" class="setup-overlay" style="display:none;">
+    <div class="setup-card">
+      <h2 id="setupTitle"></h2>
+      <div id="setupSub" class="setup-sub"></div>
+      <div class="field">
+        <label id="setupLabelServer" for="setupServer"></label>
+        <input id="setupServer" type="text" placeholder="http://192.168.1.100:8080" autocomplete="off">
+      </div>
+      <div class="field">
+        <label id="setupLabelUsername" for="setupUsername"></label>
+        <input id="setupUsername" type="text" autocomplete="username">
+      </div>
+      <div class="field">
+        <label id="setupLabelPassword" for="setupPassword"></label>
+        <input id="setupPassword" type="password" autocomplete="new-password">
+      </div>
+      <div class="setup-actions">
+        <button id="setupSkipBtn" type="button"></button>
+        <button id="setupSaveBtn" class="primary" type="button"></button>
+      </div>
+      <div id="setupStatus" class="setup-status"></div>
+    </div>
+  </div>
+  <main>
+    <header style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;">
+      <div>
+        <h1 id="pageTitle"></h1>
+        <div id="pageSub" class="sub"></div>
+      </div>
+      <button id="langToggle" style="flex-shrink: 0; margin-top: 6px;"></button>
+    </header>
+    <div id="status" class="status"></div>
+
+    <section class="dashboard-grid">
+      <article class="panel metric-card">
+        <div id="lConnection" class="metric-label"></div>
+        <div id="connectionStatus" class="metric-value"></div>
+        <div class="metric-sub">
+          <div id="serverURL"></div>
+          <div id="username"></div>
+        </div>
+      </article>
+      <article class="panel metric-card">
+        <div id="lActiveItem" class="metric-label"></div>
+        <div id="activeSummary" class="metric-value"></div>
+        <div class="metric-sub">
+          <div id="activeType"></div>
+          <div id="activeState"></div>
+        </div>
+      </article>
+      <article class="panel metric-card">
+        <div id="lTransferPolicy" class="metric-label"></div>
+        <div id="memoryThreshold" class="metric-value"></div>
+        <div class="metric-sub">
+          <div id="securityMode"></div>
+          <div id="transportMode"></div>
+          <div id="historyStats"></div>
+        </div>
+      </article>
+      <article class="panel metric-card">
+        <div id="lFileTasks" class="metric-label"></div>
+        <div id="transferSummary" class="metric-value"></div>
+        <div class="metric-sub">
+          <div id="transferStates"></div>
+          <div id="eventSummary"></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel action-panel">
+      <div id="actionBar" class="action-group"></div>
+      <div id="actionNote" class="action-note"></div>
+    </section>
+
+    <section class="section-grid">
+      <section class="panel">
+        <div class="section-head">
+          <h2 id="hSettings"></h2>
+          <div id="settingsMeta" class="section-meta"></div>
+        </div>
+        <div class="panel-body">
+          <form id="settingsForm" class="settings-form">
+            <div class="field">
+              <label id="lServerURL" for="settingsServerURL"></label>
+              <input id="settingsServerURL" type="text" autocomplete="off">
+            </div>
+            <div class="field">
+              <label id="lUsername" for="settingsUsername"></label>
+              <input id="settingsUsername" type="text" autocomplete="username">
+            </div>
+            <div class="field full">
+              <label id="lPassword" for="settingsPassword"></label>
+              <input id="settingsPassword" type="password" autocomplete="current-password">
+            </div>
+            <div class="field">
+              <label id="lStunURL" for="settingsStunURL"></label>
+              <input id="settingsStunURL" type="text" autocomplete="off">
+            </div>
+            <div class="field">
+              <label id="lReconnectDelay" for="settingsReconnectDelay"></label>
+              <input id="settingsReconnectDelay" type="number" min="1" step="1">
+            </div>
+            <div class="field">
+              <label id="lMemoryThreshold" for="settingsMemoryThreshold"></label>
+              <input id="settingsMemoryThreshold" type="number" min="1" step="1">
+            </div>
+            <div class="field checkbox">
+              <input id="settingsE2EE" type="checkbox">
+              <label id="lE2EE" for="settingsE2EE"></label>
+            </div>
+            <div class="field checkbox">
+              <input id="settingsP2P" type="checkbox">
+              <label id="lP2P" for="settingsP2P"></label>
+            </div>
+            <div class="field checkbox">
+              <input id="settingsAutoReconnect" type="checkbox">
+              <label id="lAutoReconnect" for="settingsAutoReconnect"></label>
+            </div>
+          </form>
+          <div class="settings-foot">
+            <div id="settingsHint" class="hint"></div>
+            <button id="settingsSaveButton" class="primary" type="submit" form="settingsForm"></button>
+          </div>
+        </div>
+      </section>
+
+      <div class="stack">
+        <section class="panel">
+          <div class="section-head">
+            <h2 id="hDevices"></h2>
+            <div id="deviceMeta" class="section-meta"></div>
+          </div>
+          <div class="panel-body">
+            <div id="devicesGrid" class="kv-grid"></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <h2 id="hEventLog"></h2>
+            <div id="eventMeta" class="section-meta"></div>
+          </div>
+          <div class="panel-body">
+            <ul id="events" class="event-list"></ul>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <h2 id="hFileTasksTable"></h2>
+        <div id="fileTaskMeta" class="section-meta"></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th id="thFtContent"></th>
+              <th id="thFtState"></th>
+              <th id="thFtSize"></th>
+              <th id="thFtProgress"></th>
+              <th id="thFtSource"></th>
+              <th id="thFtUpdated"></th>
+            </tr>
+          </thead>
+          <tbody id="fileTransfers"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top: 14px;">
+      <div class="section-head">
+        <h2 id="hHistory"></h2>
+        <div id="listMeta" class="section-meta"></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th id="thContent"></th>
+              <th id="thType"></th>
+              <th id="thState"></th>
+              <th id="thSize"></th>
+              <th id="thSource"></th>
+              <th id="thTime"></th>
+              <th id="thActions"></th>
+            </tr>
+          </thead>
+          <tbody id="items"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div id="pageFoot" class="foot"></div>
+  </main>
+  <script>
+    const basePath = '__BASE_PATH__';
+    const needsSetup = __NEEDS_SETUP__;
+
+    // ==================== i18n 字典 ====================
+    const i18n = {
+      en: {
+        pageTitle: 'ClipCascade Console',
+        pageSub: 'Local control center for connection, shared clipboard actions, per-device transfer state, and future desktop features',
+        langToggle: '中文',
+        loading: 'Loading...',
+        connection: 'CONNECTION',
+        activeItem: 'ACTIVE ITEM',
+        transferPolicy: 'TRANSFER POLICY',
+        fileTasks: 'FILE TASKS',
+        disconnected: 'Disconnected',
+        noActiveItem: 'No active item',
+        server: 'Server',
+        user: 'User',
+        type: 'Type',
+        state: 'State',
+        memThreshold: 'Memory Threshold',
+        e2ee: 'E2EE',
+        p2p: 'P2P',
+        enabled: 'Enabled',
+        disabled: 'Disabled',
+        readyPeers: 'ready peers',
+        history: 'History',
+        total: 'total',
+        replayable: 'replayable',
+        active: 'active',
+        waitingForTasks: 'Waiting for tasks',
+        events: 'Events',
+        actionNote: 'Toolbar actions always target the latest shared clipboard content. Each device reuses its own placeholder path, local files, and extracted folder.',
+        btnConnect: 'Connect',
+        btnDisconnect: 'Disconnect',
+        btnSendCurrent: 'Send Current Clipboard',
+        btnUseShared: 'Use Shared Now',
+        btnPlaceholder: 'Paste Local Placeholder',
+        btnRealContent: 'Paste Local Real Content',
+        btnRefresh: 'Refresh',
+        btnSaveSettings: 'Save Settings',
+        btnSelect: 'Select',
+        btnUseNow: 'Use Now',
+        btnPlaceholderShort: 'Placeholder',
+        btnRealShort: 'Real',
+        msgConnectRequested: 'Connect requested',
+        msgDisconnectRequested: 'Disconnect requested',
+        msgSent: 'Sent current clipboard',
+        msgSharedSent: 'Shared clipboard action sent',
+        msgPlaceholderSent: 'Local placeholder action sent',
+        msgRealSent: 'Local real clipboard action sent',
+        msgActiveUpdated: 'Active item updated',
+        msgClipboardSent: 'Clipboard action sent',
+        msgPlaceholderActionSent: 'Placeholder action sent',
+        msgRealClipboardSent: 'Real clipboard action sent',
+        msgSettingsSaved: 'Settings saved',
+        msgSaveFailed: 'Failed to save settings',
+        msgLoadFailed: 'Failed to load console',
+        msgDone: 'Done',
+        msgActionFailed: 'Action failed',
+        hSettings: 'Settings',
+        hDevices: 'Devices & Connection',
+        hEventLog: 'Event Log',
+        hFileTasks: 'File Tasks',
+        hHistory: 'Clipboard History',
+        lServerURL: 'Server URL',
+        lUsername: 'Username',
+        lPassword: 'Password',
+        lStunURL: 'STUN URL',
+        lReconnectDelay: 'Reconnect Delay (sec)',
+        lMemoryThreshold: 'File Memory Threshold (MiB)',
+        lE2EE: 'Enable E2EE',
+        lP2P: 'Enable P2P',
+        lAutoReconnect: 'Auto reconnect',
+        settingsPasswordHint: 'Blank password keeps the existing value.',
+        settingsSaveEnabled: 'Save enabled',
+        passwordConfigured: 'Password configured',
+        passwordNotConfigured: 'Password not configured',
+        placeholderPassword: 'Leave blank to keep existing password',
+        peerSnapshot: 'Peer snapshot',
+        recentEvents: 'Recent in-memory events',
+        transferLifecycle: 'Transfer lifecycle',
+        noFileTransfers: 'No file transfers yet',
+        noRecentEvents: 'No recent events',
+        historyEmpty: 'History is empty.',
+        historyItems: 'history items',
+        historyItem: 'history item',
+        items: 'items',
+        item: 'item',
+        transferTasks: 'transfer tasks',
+        transferTask: 'transfer task',
+        recentEvent: 'recent event',
+        recentEventsPlural: 'recent events',
+        thContent: 'Content',
+        thType: 'Type',
+        thState: 'State',
+        thSize: 'Size',
+        thSource: 'Source',
+        thTime: 'Time',
+        thActions: 'Actions',
+        thProgress: 'Progress',
+        thUpdated: 'Updated',
+        localSession: 'LOCAL SESSION',
+        p2pSession: 'P2P SESSION',
+        peers: 'PEERS',
+        readyPeersLabel: 'READY PEERS',
+        ready: 'ready',
+        paths: 'paths',
+        yes: 'yes',
+        no: 'no',
+        setupTitle: 'Welcome to ClipCascade',
+        setupSub: 'Configure the server connection to get started. Your password will be encrypted and stored locally.',
+        setupLabelServer: 'Server URL',
+        setupLabelUsername: 'Username',
+        setupLabelPassword: 'Password',
+        setupSaveBtn: 'Save & Connect',
+        setupSkipBtn: 'Skip for Now',
+        setupSaving: 'Saving...',
+        setupSuccess: 'Connected! Closing setup...',
+        setupFailed: 'Failed to save: ',
+      },
+      zh: {
+        pageTitle: 'ClipCascade 控制中心',
+        pageSub: '本地控制中心，管理连接、共享剪贴板操作、设备文件传输状态等功能',
+        langToggle: 'English',
+        loading: '加载中...',
+        connection: '连接状态',
+        activeItem: '当前项目',
+        transferPolicy: '传输策略',
+        fileTasks: '文件传输',
+        disconnected: '未连接',
+        noActiveItem: '无活跃项目',
+        server: '服务器',
+        user: '用户',
+        type: '类型',
+        state: '状态',
+        memThreshold: '内存阈值',
+        e2ee: 'E2EE',
+        p2p: 'P2P',
+        enabled: '已启用',
+        disabled: '已禁用',
+        readyPeers: '个就绪节点',
+        history: '历史',
+        total: '总计',
+        replayable: '可回放',
+        active: '个活跃',
+        waitingForTasks: '等待任务',
+        events: '事件',
+        actionNote: '工具栏操作总是应用在最新被共享发布的内容上。每台设备使用自己的占位路径、本地文件或解压目录。',
+        btnConnect: '连接服务端',
+        btnDisconnect: '断开连接',
+        btnSendCurrent: '同步到在线设备',
+        btnUseShared: '立即使用共享信息',
+        btnPlaceholder: '粘贴占位路径',
+        btnRealContent: '粘贴真实文件内容',
+        btnRefresh: '刷新面板',
+        btnSaveSettings: '保存设置',
+        btnSelect: '选为活跃',
+        btnUseNow: '立即使用',
+        btnPlaceholderShort: '占位路径',
+        btnRealShort: '真实内容',
+        msgConnectRequested: '已发送连接请求',
+        msgDisconnectRequested: '已发送断开请求',
+        msgSent: '已发送当前剪贴板',
+        msgSharedSent: '已发送共享剪贴板操作',
+        msgPlaceholderSent: '已发送占位路径操作',
+        msgRealSent: '已发送真实内容操作',
+        msgActiveUpdated: '已更新活跃项目',
+        msgClipboardSent: '已发送剪贴板操作',
+        msgPlaceholderActionSent: '已发送占位路径操作',
+        msgRealClipboardSent: '已发送真实内容操作',
+        msgSettingsSaved: '设置已保存',
+        msgSaveFailed: '保存设置失败',
+        msgLoadFailed: '加载控制台失败',
+        msgDone: '完成',
+        msgActionFailed: '操作失败',
+        hSettings: '设置',
+        hDevices: '设备与连接',
+        hEventLog: '事件日志',
+        hFileTasks: '文件传输任务',
+        hHistory: '历史记录',
+        lServerURL: '服务器地址',
+        lUsername: '用户名',
+        lPassword: '密码',
+        lStunURL: 'STUN 服务器地址',
+        lReconnectDelay: '重连延迟（秒）',
+        lMemoryThreshold: '文件内存阈值（MiB）',
+        lE2EE: '启用端到端加密 (E2EE)',
+        lP2P: '启用 P2P 传输',
+        lAutoReconnect: '自动重连',
+        settingsPasswordHint: '密码留空则保持原有密码不变。',
+        settingsSaveEnabled: '允许保存',
+        passwordConfigured: '密码已配置',
+        passwordNotConfigured: '密码未配置',
+        placeholderPassword: '留空则保持原有密码',
+        peerSnapshot: '节点快照',
+        recentEvents: '近期内存事件',
+        transferLifecycle: '传输生命周期',
+        noFileTransfers: '暂无文件传输',
+        noRecentEvents: '暂无近期事件',
+        historyEmpty: '历史记录为空',
+        historyItems: '条历史记录',
+        historyItem: '条历史记录',
+        items: '项',
+        item: '项',
+        transferTasks: '个传输任务',
+        transferTask: '个传输任务',
+        recentEvent: '条近期事件',
+        recentEventsPlural: '条近期事件',
+        thContent: '内容',
+        thType: '类型',
+        thState: '状态',
+        thSize: '大小',
+        thSource: '来源',
+        thTime: '时间',
+        thActions: '操作',
+        thProgress: '进度',
+        thUpdated: '更新时间',
+        localSession: '本地会话',
+        p2pSession: 'P2P 会话',
+        peers: '节点',
+        readyPeersLabel: '就绪节点',
+        ready: '就绪',
+        paths: '路径',
+        yes: '是',
+        no: '否',
+        setupTitle: '欢迎使用 ClipCascade',
+        setupSub: '配置服务器连接信息即可开始使用。密码将加密存储在本地。',
+        setupLabelServer: '服务器地址',
+        setupLabelUsername: '用户名',
+        setupLabelPassword: '密码',
+        setupSaveBtn: '保存并连接',
+        setupSkipBtn: '稍后配置',
+        setupSaving: '保存中...',
+        setupSuccess: '已连接！正在关闭引导...',
+        setupFailed: '保存失败：',
+      }
+    };
+
+    let currentLang = localStorage.getItem('cc_lang') || 'zh';
+
+    function t(key) {
+      return (i18n[currentLang] && i18n[currentLang][key]) || (i18n.en[key]) || key;
+    }
+
+    // ==================== 刷新所有静态文本 ====================
+    function applyLang() {
+      document.documentElement.lang = currentLang;
+      document.title = t('pageTitle');
+      setText('pageTitle', t('pageTitle'));
+      setText('pageSub', t('pageSub'));
+      setText('actionNote', t('actionNote'));
+      setText('pageFoot', currentLang === 'zh'
+        ? '桌面端应用运行时，控制台会自动刷新数据。'
+        : 'The console refreshes automatically while the desktop app is running.');
+
+      const toggle = document.getElementById('langToggle');
+      if (toggle) toggle.textContent = t('langToggle');
+
+      // 仪表盘标签
+      setText('lConnection', t('connection'));
+      setText('lActiveItem', t('activeItem'));
+      setText('lTransferPolicy', t('transferPolicy'));
+      setText('lFileTasks', t('fileTasks'));
+
+      // 区域标题和表单标签
+      setText('hSettings', t('hSettings'));
+      setText('hDevices', t('hDevices'));
+      setText('hEventLog', t('hEventLog'));
+      setText('hFileTasksTable', t('hFileTasks'));
+      setText('hHistory', t('hHistory'));
+      setText('lServerURL', t('lServerURL'));
+      setText('lUsername', t('lUsername'));
+      setText('lPassword', t('lPassword'));
+      setText('lStunURL', t('lStunURL'));
+      setText('lReconnectDelay', t('lReconnectDelay'));
+      setText('lMemoryThreshold', t('lMemoryThreshold'));
+      setText('lE2EE', t('lE2EE'));
+      setText('lP2P', t('lP2P'));
+      setText('lAutoReconnect', t('lAutoReconnect'));
+      setText('settingsSaveButton', t('btnSaveSettings'));
+
+      var pwInput = document.getElementById('settingsPassword');
+      if (pwInput) pwInput.placeholder = t('placeholderPassword');
+
+      // 表头
+      setText('thFtContent', t('thContent'));
+      setText('thFtState', t('thState'));
+      setText('thFtSize', t('thSize'));
+      setText('thFtProgress', t('thProgress'));
+      setText('thFtSource', t('thSource'));
+      setText('thFtUpdated', t('thUpdated'));
+      setText('thContent', t('thContent'));
+      setText('thType', t('thType'));
+      setText('thState', t('thState'));
+      setText('thSize', t('thSize'));
+      setText('thSource', t('thSource'));
+      setText('thTime', t('thTime'));
+      setText('thActions', t('thActions'));
+
+      // 重新渲染动态内容
+      if (typeof load === 'function' && !busy) {
+        try { load(); } catch(e) {}
+      }
+    }
+
+    // ==================== 通用工具函数 ====================
+    const endpoints = {
+      list: basePath + 'api/list',
+      setActive: basePath + 'api/set-active',
+      replay: basePath + 'api/replay',
+      sendCurrent: basePath + 'api/send-current',
+      connect: basePath + 'api/connect',
+      disconnect: basePath + 'api/disconnect',
+      settings: basePath + 'api/settings'
+    };
+
+    let refreshTimer = null;
+    let busy = false;
+    let settingsDirty = false;
+
+    function setStatus(message, isError) {
+      const node = document.getElementById('status');
+      node.textContent = message || '';
+      node.className = isError ? 'status error' : 'status';
+    }
+
+    function fmtTime(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return '';
+      return date.toLocaleString();
+    }
+
+    function textOrDash(value) {
+      return value || '\u2014';
+    }
+
+    function setText(id, value, fallback) {
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.textContent = value || fallback || '\u2014';
+    }
+
+    function tag(text, className) {
+      const span = document.createElement('span');
+      span.className = className ? 'tag ' + className : 'tag';
+      span.textContent = text;
+      return span;
+    }
+
+    function button(label, className, onClick, disabled) {
+      const node = document.createElement('button');
+      node.textContent = label;
+      node.disabled = !!disabled;
+      if (className) node.className = className;
+      node.addEventListener('click', onClick);
+      return node;
+    }
+
+    async function requestJSON(url, options) {
+      const response = await fetch(url, Object.assign({ cache: 'no-store' }, options || {}));
+      let payload = null;
+      try { payload = await response.json(); } catch (err) { payload = null; }
+      if (!response.ok) {
+        const message = payload && payload.error ? payload.error : 'Request failed';
+        throw new Error(message);
+      }
+      return payload || {};
+    }
+
+    async function mutate(url, body, successMessage) {
+      try {
+        await requestJSON(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: body ? JSON.stringify(body) : ''
+        });
+        setStatus(successMessage || t('msgDone'), false);
+        await load();
+      } catch (err) {
+        setStatus(err.message || t('msgActionFailed'), true);
+      }
+    }
+
+    // ==================== 数据加载与渲染 ====================
+    async function load() {
+      if (busy) return;
+      busy = true;
+      try {
+        const data = await requestJSON(endpoints.list);
+        const items = data.items || [];
+        const fileTransfers = data.file_transfers || [];
+        const events = data.events || [];
+        renderOverview(data.overview || {}, data.actions || {}, items, fileTransfers, events);
+        renderActions(data.actions || {});
+        renderDevices(data.devices || {});
+        renderSettings(data.settings || {}, data.actions || {});
+        renderFileTransfers(fileTransfers);
+        renderEvents(events);
+        renderHistory(items);
+        const count = items.length;
+        const statusText = data.overview && data.overview.connection_status ? data.overview.connection_status : t('disconnected');
+        setStatus(statusText + ' \u2022 ' + count + ' ' + t(count === 1 ? 'historyItem' : 'historyItems'), false);
+      } catch (err) {
+        setStatus(err.message || t('msgLoadFailed'), true);
+      } finally {
+        busy = false;
+      }
+    }
+
+    function renderOverview(overview, actions, items, fileTransfers, events) {
+      setText('connectionStatus', overview.connection_status || t('disconnected'));
+      setText('serverURL', t('server') + ': ' + textOrDash(overview.server_url));
+      setText('username', t('user') + ': ' + textOrDash(overview.username));
+      setText('activeSummary', overview.active_summary || t('noActiveItem'));
+      setText('activeType', t('type') + ': ' + textOrDash(overview.active_type));
+      setText('activeState', t('state') + ': ' + textOrDash(overview.active_state));
+      setText('memoryThreshold', overview.file_memory_threshold_mib
+        ? (t('memThreshold') + ': ' + overview.file_memory_threshold_mib + ' MiB')
+        : (t('memThreshold') + ': \u2014'));
+      setText('securityMode', t('e2ee') + ': ' + (overview.e2ee_enabled ? t('enabled') : t('disabled')));
+      setText('transportMode', t('p2p') + ': ' + (overview.p2p_enabled
+        ? (t('enabled') + ', ' + (overview.p2p_ready_peers || 0) + ' ' + t('readyPeers'))
+        : t('disabled')));
+      var totalItems = overview.total_items || items.length || 0;
+      setText('historyStats', t('history') + ': ' + totalItems + ' ' + t('total') + ', ' + (overview.replayable_items || 0) + ' ' + t('replayable'));
+      setText('listMeta', totalItems + ' ' + t(totalItems === 1 ? 'item' : 'items'));
+
+      var activeTransfers = fileTransfers.filter(function(task) { return task.state && task.state !== 'consumed'; });
+      var stateSummary = activeTransfers.slice(0, 3).map(function(task) {
+        return (task.display_name || task.transfer_id || 'transfer') + ' [' + (task.state || 'unknown') + ']';
+      }).join(' \u2022 ');
+      setText('transferSummary', activeTransfers.length + ' ' + t('active'));
+      setText('transferStates', stateSummary || t('waitingForTasks'));
+      setText('eventSummary', t('events') + ': ' + events.length);
+    }
+
+    function renderActions(actions) {
+      var root = document.getElementById('actionBar');
+      root.textContent = '';
+      root.appendChild(button(t('btnConnect'), '', function() {
+        mutate(endpoints.connect, null, t('msgConnectRequested'));
+      }, !actions.can_connect));
+      root.appendChild(button(t('btnDisconnect'), '', function() {
+        mutate(endpoints.disconnect, null, t('msgDisconnectRequested'));
+      }, !actions.can_disconnect));
+      root.appendChild(button(t('btnSendCurrent'), '', function() {
+        mutate(endpoints.sendCurrent, null, t('msgSent'));
+      }, !actions.can_send_current));
+      root.appendChild(button(t('btnUseShared'), 'primary', function() {
+        mutate(endpoints.replay, { mode: 'clipboard_immediate' }, t('msgSharedSent'));
+      }, !actions.can_replay_active));
+      root.appendChild(button(t('btnPlaceholder'), '', function() {
+        mutate(endpoints.replay, { mode: 'path_placeholder_paste' }, t('msgPlaceholderSent'));
+      }, !actions.can_replay_active));
+      root.appendChild(button(t('btnRealContent'), '', function() {
+        mutate(endpoints.replay, { mode: 'system_clipboard_paste' }, t('msgRealSent'));
+      }, !actions.can_replay_active));
+      root.appendChild(button(t('btnRefresh'), '', function() { load(); }, false));
+
+      var saveButton = document.getElementById('settingsSaveButton');
+      if (saveButton) {
+        saveButton.disabled = !actions.can_save_settings;
+        saveButton.textContent = t('btnSaveSettings');
+      }
+    }
+
+    function renderDevices(devices) {
+      var grid = document.getElementById('devicesGrid');
+      grid.textContent = '';
+      var rows = [
+        { label: t('localSession'), value: textOrDash(devices.local_session_id) },
+        { label: t('p2pSession'), value: textOrDash(devices.p2p_session_id) },
+        { label: t('peers'), value: (devices.peer_ids || []).length ? devices.peer_ids.join(', ') : '\u2014' },
+        { label: t('readyPeersLabel'), value: (devices.ready_peer_ids || []).length ? devices.ready_peer_ids.join(', ') : '\u2014' }
+      ];
+      rows.forEach(function(row) {
+        var wrapper = document.createElement('div');
+        wrapper.className = 'kv';
+        var label = document.createElement('div');
+        label.className = 'kv-label';
+        label.textContent = row.label;
+        var value = document.createElement('div');
+        value.className = 'kv-value';
+        value.textContent = row.value;
+        wrapper.appendChild(label);
+        wrapper.appendChild(value);
+        grid.appendChild(wrapper);
+      });
+      setText('deviceMeta', ((devices.ready_peer_ids || []).length || 0) + ' ' + t('ready') + ' / ' + ((devices.peer_ids || []).length || 0) + ' ' + t('peers').toLowerCase());
+    }
+
+    function renderSettings(settings, actions) {
+      var form = document.getElementById('settingsForm');
+      if (!form) return;
+
+      if (!settingsDirty || form.dataset.initialized !== 'true') {
+        document.getElementById('settingsServerURL').value = settings.server_url || '';
+        document.getElementById('settingsUsername').value = settings.username || '';
+        document.getElementById('settingsPassword').value = '';
+        document.getElementById('settingsStunURL').value = settings.stun_url || '';
+        document.getElementById('settingsReconnectDelay').value = settings.reconnect_delay_sec || 5;
+        document.getElementById('settingsMemoryThreshold').value = settings.file_memory_threshold_mib || 1024;
+        document.getElementById('settingsE2EE').checked = !!settings.e2ee_enabled;
+        document.getElementById('settingsP2P').checked = !!settings.p2p_enabled;
+        document.getElementById('settingsAutoReconnect').checked = !!settings.auto_reconnect;
+        form.dataset.initialized = 'true';
+      }
+
+      var pwStatus = settings.password_configured ? t('passwordConfigured') : t('passwordNotConfigured');
+      setText('settingsMeta', pwStatus);
+      setText('settingsHint', t('settingsPasswordHint') + ' ' + t('settingsSaveEnabled') + ': ' + (actions.can_save_settings ? t('yes') : t('no')));
+      document.getElementById('settingsSaveButton').disabled = !actions.can_save_settings;
+    }
+
+    function renderFileTransfers(items) {
+      var tbody = document.getElementById('fileTransfers');
+      tbody.textContent = '';
+      if (!items || items.length === 0) {
+        var row = document.createElement('tr');
+        var cell = document.createElement('td');
+        cell.colSpan = 6;
+        cell.className = 'empty';
+        cell.textContent = t('noFileTransfers');
+        row.appendChild(cell);
+        tbody.appendChild(row);
+        setText('fileTaskMeta', t('transferLifecycle'));
+        return;
+      }
+
+      items.forEach(function(item) {
+        var row = document.createElement('tr');
+
+        var contentCell = document.createElement('td');
+        var main = document.createElement('div');
+        main.className = 'summary-main';
+        main.textContent = item.display_name || item.transfer_id || item.id || 'transfer';
+        contentCell.appendChild(main);
+        var sub = document.createElement('div');
+        sub.className = 'summary-sub';
+        sub.textContent = item.transfer_id || '';
+        contentCell.appendChild(sub);
+        if (item.error_message) {
+          var err = document.createElement('div');
+          err.className = 'summary-error';
+          err.textContent = item.error_message;
+          contentCell.appendChild(err);
+        }
+        row.appendChild(contentCell);
+
+        var stateCell = document.createElement('td');
+        var tags2 = document.createElement('div');
+        tags2.className = 'tags';
+        tags2.appendChild(tag(item.state || 'unknown', item.error_message ? 'warn' : ''));
+        if (item.local_path_count) { tags2.appendChild(tag(t('paths') + ' ' + item.local_path_count)); }
+        stateCell.appendChild(tags2);
+        row.appendChild(stateCell);
+
+        var sizeCell = document.createElement('td');
+        sizeCell.textContent = item.size_human || '\u2014';
+        row.appendChild(sizeCell);
+
+        var progressCell = document.createElement('td');
+        progressCell.textContent = (item.total_chunks || item.progress_percent) ? ((item.progress_percent || 0) + '%') : '\u2014';
+        row.appendChild(progressCell);
+
+        var sourceCell = document.createElement('td');
+        sourceCell.textContent = item.source_device || '\u2014';
+        row.appendChild(sourceCell);
+
+        var updatedCell = document.createElement('td');
+        updatedCell.textContent = fmtTime(item.updated_at);
+        row.appendChild(updatedCell);
+
+        tbody.appendChild(row);
+      });
+
+      setText('fileTaskMeta', items.length + ' ' + t(items.length === 1 ? 'transferTask' : 'transferTasks'));
+    }
+
+    function renderEvents(events) {
+      var root = document.getElementById('events');
+      root.textContent = '';
+      if (!events || events.length === 0) {
+        var item = document.createElement('li');
+        item.className = 'empty';
+        item.textContent = t('noRecentEvents');
+        root.appendChild(item);
+        setText('eventMeta', t('recentEvents'));
+        return;
+      }
+
+      events.forEach(function(event) {
+        var item = document.createElement('li');
+        item.className = 'event-item';
+        var head = document.createElement('div');
+        head.className = 'event-head';
+        var kind = document.createElement('div');
+        kind.className = 'event-kind';
+        kind.textContent = event.kind || 'event';
+        head.appendChild(kind);
+        var time = document.createElement('div');
+        time.className = 'event-time';
+        time.textContent = fmtTime(event.time);
+        head.appendChild(time);
+        var message = document.createElement('div');
+        message.className = 'event-message';
+        message.textContent = event.message || '';
+        item.appendChild(head);
+        item.appendChild(message);
+        root.appendChild(item);
+      });
+
+      setText('eventMeta', events.length + ' ' + t(events.length === 1 ? 'recentEvent' : 'recentEventsPlural'));
+    }
+
+    function renderHistory(items) {
+      var root = document.getElementById('items');
+      root.textContent = '';
+      if (!items.length) {
+        var empty = document.createElement('tr');
+        var cell = document.createElement('td');
+        cell.colSpan = 7;
+        cell.className = 'empty';
+        cell.textContent = t('historyEmpty');
+        empty.appendChild(cell);
+        root.appendChild(empty);
+        return;
+      }
+
+      items.forEach(function(item) {
+        var row = document.createElement('tr');
+        if (item.active) row.className = 'active';
+
+        var summaryCell = document.createElement('td');
+        var summaryMain = document.createElement('div');
+        summaryMain.className = 'summary-main';
+        summaryMain.textContent = item.summary || item.file_name || item.display_name || item.id;
+        summaryCell.appendChild(summaryMain);
+        if (item.file_name && item.file_name !== summaryMain.textContent) {
+          var sub = document.createElement('div');
+          sub.className = 'summary-sub';
+          sub.textContent = item.file_name;
+          summaryCell.appendChild(sub);
+        }
+        if (item.error_message) {
+          var error = document.createElement('div');
+          error.className = 'summary-error';
+          error.textContent = item.error_message;
+          summaryCell.appendChild(error);
+        }
+
+        var typeCell = document.createElement('td');
+        var typeTags = document.createElement('div');
+        typeTags.className = 'tags';
+        typeTags.appendChild(tag(item.type || 'unknown'));
+        if (item.active) typeTags.appendChild(tag(t('active'), 'active'));
+        typeCell.appendChild(typeTags);
+
+        var stateCell = document.createElement('td');
+        var stateTags = document.createElement('div');
+        stateTags.className = 'tags';
+        stateTags.appendChild(tag(item.state || 'unknown'));
+        stateCell.appendChild(stateTags);
+
+        var sizeCell = document.createElement('td');
+        sizeCell.textContent = item.size_human || '\u2014';
+
+        var sourceCell = document.createElement('td');
+        sourceCell.textContent = item.source_device || 'remote';
+
+        var timeCell = document.createElement('td');
+        timeCell.textContent = fmtTime(item.created_at) || '\u2014';
+
+        var actionsCell = document.createElement('td');
+        var actions = document.createElement('div');
+        actions.className = 'actions';
+        actions.appendChild(button(t('btnSelect'), '', function() {
+          mutate(endpoints.setActive, { id: item.id }, t('msgActiveUpdated'));
+        }, item.active));
+        actions.appendChild(button(t('btnUseNow'), 'primary', function() {
+          mutate(endpoints.replay, { id: item.id, mode: 'clipboard_immediate' }, t('msgClipboardSent'));
+        }, !item.replayable));
+        actions.appendChild(button(t('btnPlaceholderShort'), '', function() {
+          mutate(endpoints.replay, { id: item.id, mode: 'path_placeholder_paste' }, t('msgPlaceholderActionSent'));
+        }, !item.replayable));
+        actions.appendChild(button(t('btnRealShort'), '', function() {
+          mutate(endpoints.replay, { id: item.id, mode: 'system_clipboard_paste' }, t('msgRealClipboardSent'));
+        }, !item.replayable));
+        actionsCell.appendChild(actions);
+
+        row.appendChild(summaryCell);
+        row.appendChild(typeCell);
+        row.appendChild(stateCell);
+        row.appendChild(sizeCell);
+        row.appendChild(sourceCell);
+        row.appendChild(timeCell);
+        row.appendChild(actionsCell);
+        root.appendChild(row);
+      });
+    }
+
+    // ==================== 设置保存 ====================
+    async function handleSaveSettings(event) {
+      event.preventDefault();
+      var payload = {
+        server_url: document.getElementById('settingsServerURL').value.trim(),
+        username: document.getElementById('settingsUsername').value.trim(),
+        password: document.getElementById('settingsPassword').value,
+        e2ee_enabled: document.getElementById('settingsE2EE').checked,
+        p2p_enabled: document.getElementById('settingsP2P').checked,
+        stun_url: document.getElementById('settingsStunURL').value.trim(),
+        auto_reconnect: document.getElementById('settingsAutoReconnect').checked,
+        reconnect_delay_sec: parseInt(document.getElementById('settingsReconnectDelay').value || '0', 10) || 0,
+        file_memory_threshold_mib: parseInt(document.getElementById('settingsMemoryThreshold').value || '0', 10) || 0
+      };
+      try {
+        await requestJSON(endpoints.settings, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        settingsDirty = false;
+        setStatus(t('msgSettingsSaved'), false);
+        await load();
+      } catch (err) {
+        setStatus(err.message || t('msgSaveFailed'), true);
+      }
+    }
+
+    // ==================== 首次配置引导 ====================
+    function applySetupLang() {
+      setText('setupTitle', t('setupTitle'));
+      setText('setupSub', t('setupSub'));
+      setText('setupLabelServer', t('setupLabelServer'));
+      setText('setupLabelUsername', t('setupLabelUsername'));
+      setText('setupLabelPassword', t('setupLabelPassword'));
+      setText('setupSaveBtn', t('setupSaveBtn'));
+      setText('setupSkipBtn', t('setupSkipBtn'));
+    }
+
+    function showSetupOverlay() {
+      var overlay = document.getElementById('setupOverlay');
+      if (!overlay) return;
+      overlay.style.display = 'flex';
+      applySetupLang();
+
+      // 预填默认值
+      var serverInput = document.getElementById('setupServer');
+      if (serverInput && !serverInput.value) {
+        serverInput.value = 'http://localhost:8080';
+      }
+
+      document.getElementById('setupSkipBtn').addEventListener('click', function() {
+        overlay.style.display = 'none';
+      });
+
+      document.getElementById('setupSaveBtn').addEventListener('click', async function() {
+        var statusEl = document.getElementById('setupStatus');
+        statusEl.className = 'setup-status';
+        statusEl.textContent = t('setupSaving');
+
+        var payload = {
+          server_url: document.getElementById('setupServer').value.trim(),
+          username: document.getElementById('setupUsername').value.trim(),
+          password: document.getElementById('setupPassword').value,
+          e2ee_enabled: true,
+          p2p_enabled: true,
+          stun_url: 'stun:stun.l.google.com:19302',
+          auto_reconnect: true,
+          reconnect_delay_sec: 5,
+          file_memory_threshold_mib: 1024
+        };
+
+        if (!payload.server_url || !payload.username || !payload.password) {
+          statusEl.className = 'setup-status err';
+          statusEl.textContent = currentLang === 'zh' ? '所有字段均为必填' : 'All fields are required';
+          return;
+        }
+
+        try {
+          await requestJSON(endpoints.settings, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          statusEl.className = 'setup-status ok';
+          statusEl.textContent = t('setupSuccess');
+
+          // 触发连接
+          try { await requestJSON(endpoints.connect, { method: 'POST' }); } catch(e) {}
+
+          setTimeout(function() {
+            overlay.style.display = 'none';
+            settingsDirty = false;
+            load();
+          }, 1200);
+        } catch (err) {
+          statusEl.className = 'setup-status err';
+          statusEl.textContent = t('setupFailed') + (err.message || '');
+        }
+      });
+    }
+
+    // ==================== 初始化 ====================
+    document.addEventListener('DOMContentLoaded', function() {
+      var toggle = document.getElementById('langToggle');
+      if (toggle) {
+        toggle.addEventListener('click', function() {
+          currentLang = currentLang === 'en' ? 'zh' : 'en';
+          localStorage.setItem('cc_lang', currentLang);
+          applyLang();
+          applySetupLang();
+        });
+      }
+      applyLang();
+
+      var form = document.getElementById('settingsForm');
+      form.addEventListener('submit', handleSaveSettings);
+      form.addEventListener('input', function() { settingsDirty = true; });
+      refreshTimer = setInterval(load, 3000);
+
+      // 首次配置引导
+      if (needsSetup) {
+        showSetupOverlay();
+      }
+    });
+
+    window.addEventListener('beforeunload', function() {
+      if (refreshTimer) clearInterval(refreshTimer);
+    });
+  </script>
+</body>
+</html>

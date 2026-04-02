@@ -1,0 +1,8 @@
+.git
+.github
+build
+.cache
+.gradle-user-home
+mobile/android/.gradle
+mobile/android/app/build
+node_modules

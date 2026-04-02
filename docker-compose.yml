@@ -1,0 +1,76 @@
+services:
+  clipcascade:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: clipcascade
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - clipcascade-data:/data
+    environment:
+      CC_PORT: "8080"
+      CC_SIGNUP_ENABLED: "true"
+      CC_P2P_ENABLED: "false"
+      CC_MAX_MESSAGE_SIZE_IN_MiB: "1"
+
+  go-builder:
+    build:
+      context: .
+      dockerfile: docker/build/go-builder.Dockerfile
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    environment:
+      GOCACHE: /workspace/.cache/go-build
+      GOMODCACHE: /workspace/.cache/go-mod
+      GOSUMDB: "off"
+      PATH: /usr/local/go/bin:/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+  desktop-builder:
+    build:
+      context: .
+      dockerfile: docker/build/desktop-builder.Dockerfile
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    environment:
+      GOCACHE: /workspace/.cache/go-build
+      GOMODCACHE: /workspace/.cache/go-mod
+      GOSUMDB: "off"
+      PATH: /usr/local/go/bin:/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+  fyne-builder:
+    build:
+      context: .
+      dockerfile: docker/build/fyne-builder.Dockerfile
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    environment:
+      GOCACHE: /workspace/.cache/go-build
+      GOMODCACHE: /workspace/.cache/go-mod
+      GOSUMDB: "off"
+      PATH: /usr/local/go/bin:/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+  android-builder:
+    build:
+      context: .
+      dockerfile: docker/build/android-builder.Dockerfile
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    environment:
+      ANDROID_HOME: /opt/android-sdk
+      ANDROID_SDK_ROOT: /opt/android-sdk
+      ANDROID_NDK_HOME: /opt/android-sdk/ndk/26.1.10909125
+      GOCACHE: /workspace/.cache/go-build
+      GOMODCACHE: /workspace/.cache/go-mod
+      GOSUMDB: "off"
+      GRADLE_USER_HOME: /workspace/.gradle-user-home
+      CC_ANDROID_API: "26"
+      PATH: /opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/usr/local/go/bin:/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+volumes:
+  clipcascade-data:

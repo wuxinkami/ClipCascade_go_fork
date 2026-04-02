@@ -1,0 +1,92 @@
+# ==================== 编译产物 ====================
+build/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.apk
+*.aar
+*.ipa
+
+# ==================== Go ====================
+# Go vendor（如需提交请注释此行）
+vendor/
+# Go 测试/性能分析产物
+*.test
+*.out
+*.prof
+coverage.html
+coverage.txt
+
+# ==================== 缓存 / 中间文件 ====================
+.cache/
+.tmp/
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+
+# ==================== 本地数据库 / 运行时产物 ====================
+database/*.db
+database/*.db-journal
+database/*.db-wal
+
+# ==================== Gradle / Android ====================
+.gradle-user-home/
+.gradle/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/app/libs/
+mobile/android/local.properties
+
+# ==================== Fyne / 交叉编译临时输出 ====================
+fyne_mobile/fynemobile.apk
+fyne_mobile/fyne-cross/
+
+# ==================== IDE / 编辑器 ====================
+.idea/
+.vscode/
+*.iml
+*.code-workspace
+.golutra/
+data/
+_abandoned_mobile_original/
+# ==================== macOS ====================
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# ==================== Windows ====================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ==================== Linux ====================
+*~
+
+# ==================== 密钥 / 敏感文件 ====================
+*.key
+*.pem
+*.p12
+*.jks
+master.key
+
+# ==================== 文档（按需取消注释上传） ====================
+/docs/

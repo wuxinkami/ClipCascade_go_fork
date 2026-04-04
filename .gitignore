@@ -89,4 +89,5 @@ Desktop.ini
 master.key
 
 # ==================== 文档（按需取消注释上传） ====================
-/docs/
+/docs/*
+!/docs/requirements.md

@@ -426,6 +426,108 @@ func TestApplicationAdmitReceivedClipboardDataRegistersIncomingTransferForManife
 	}
 }
 
+func TestApplicationAdmitReceivedClipboardDataKeepsExistingIncomingTransferState(t *testing.T) {
+	app := &Application{history: history.NewManager(10), transfers: newTransferManager("session-local")}
+	payload, err := json.Marshal(protocol.FileStubManifest{
+		ProtocolVersion: 1,
+		EntryID:         "entry-1",
+		TransferID:      "transfer-1",
+		SourceSessionID: "session-remote",
+		SourceDevice:    "desktop-remote",
+		DisplayName:     "report.pdf",
+		EntryCount:      1,
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	now := time.Date(2026, 3, 15, 8, 0, 0, 0, time.UTC)
+	action := app.admitReceivedClipboardData(&protocol.ClipboardData{
+		Type:    constants.TypeFileStub,
+		Payload: string(payload),
+	}, now)
+	if action != receiveActionAdmitHistory {
+		t.Fatalf("action = %v, want %v", action, receiveActionAdmitHistory)
+	}
+
+	_, err = app.transfers.mutateIncoming("transfer-1", func(incoming *incomingTransfer) error {
+		incoming.BaseDir = "/tmp/existing"
+		incoming.ArchivePath = "/tmp/existing/payload.zip"
+		incoming.ArchiveBytes = []byte("partial")
+		incoming.LastChunkIdx = 2
+		incoming.TotalChunks = 5
+		incoming.RequestActive = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("mutateIncoming() error = %v", err)
+	}
+
+	action = app.admitReceivedClipboardData(&protocol.ClipboardData{
+		Type:    constants.TypeFileStub,
+		Payload: string(payload),
+	}, now.Add(time.Minute))
+	if action != receiveActionAdmitHistory {
+		t.Fatalf("second action = %v, want %v", action, receiveActionAdmitHistory)
+	}
+
+	incoming := app.transfers.GetIncoming("transfer-1")
+	if incoming == nil {
+		t.Fatal("incoming transfer not registered")
+	}
+	if incoming.BaseDir != "/tmp/existing" {
+		t.Fatalf("BaseDir = %q, want preserved value", incoming.BaseDir)
+	}
+	if incoming.ArchivePath != "/tmp/existing/payload.zip" {
+		t.Fatalf("ArchivePath = %q, want preserved value", incoming.ArchivePath)
+	}
+	if string(incoming.ArchiveBytes) != "partial" {
+		t.Fatalf("ArchiveBytes = %q, want preserved value", string(incoming.ArchiveBytes))
+	}
+	if incoming.LastChunkIdx != 2 {
+		t.Fatalf("LastChunkIdx = %d, want 2", incoming.LastChunkIdx)
+	}
+	if incoming.TotalChunks != 5 {
+		t.Fatalf("TotalChunks = %d, want 5", incoming.TotalChunks)
+	}
+	if !incoming.RequestActive {
+		t.Fatal("RequestActive should be preserved")
+	}
+}
+
+func TestApplicationAdmitReceivedClipboardDataReusesExistingLocalTextHistory(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		history:   history.NewManager(10),
+		transfers: newTransferManager("session-local"),
+	}
+	clipData := &protocol.ClipboardData{
+		Type:            constants.TypeText,
+		Payload:         "self-text",
+		SourceSessionID: "session-local",
+	}
+
+	app.recordOutgoingClipboardHistory(clipData)
+	items := app.history.List()
+	if len(items) != 1 {
+		t.Fatalf("len(items) before echo = %d, want 1", len(items))
+	}
+	originalID := items[0].ID
+
+	action := app.admitReceivedClipboardData(clipData, time.Now())
+	if action != receiveActionAdmitHistory {
+		t.Fatalf("action = %v, want %v", action, receiveActionAdmitHistory)
+	}
+
+	items = app.history.List()
+	if len(items) != 1 {
+		t.Fatalf("len(items) after echo = %d, want 1", len(items))
+	}
+	if items[0].ID != originalID {
+		t.Fatalf("history item id = %q, want %q", items[0].ID, originalID)
+	}
+}
+
 func TestApplicationAdmitReceivedClipboardDataDoesNotAddLegacyOrUnknownTypes(t *testing.T) {
 	app := &Application{history: history.NewManager(10)}
 	now := time.Date(2026, 3, 15, 8, 0, 0, 0, time.UTC)

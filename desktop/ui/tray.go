@@ -12,6 +12,7 @@ type Tray struct {
 	onConnect              func()
 	onDisconnect           func()
 	onOpenHistory          func()
+	onOpenLogWindow        func()
 	onPastePlaceholder     func()
 	onPasteRealContent     func()
 	onSendCurrentClipboard func()
@@ -23,6 +24,7 @@ type Tray struct {
 	connectItem            *systray.MenuItem
 	disconnectItem         *systray.MenuItem
 	historyItem            *systray.MenuItem
+	logWindowItem          *systray.MenuItem
 	placeholderItem        *systray.MenuItem
 	realPasteItem          *systray.MenuItem
 	sendCurrentItem        *systray.MenuItem
@@ -46,6 +48,9 @@ func (t *Tray) OnQuit(fn func()) { t.onQuit = fn }
 
 // OnOpenHistory 设置“Open Console”菜单点击的回调。
 func (t *Tray) OnOpenHistory(fn func()) { t.onOpenHistory = fn }
+
+// OnOpenLogWindow 设置“Open Log Window”菜单点击的回调。
+func (t *Tray) OnOpenLogWindow(fn func()) { t.onOpenLogWindow = fn }
 
 // OnPastePlaceholder 设置“Paste Placeholder Path”菜单点击的回调。
 func (t *Tray) OnPastePlaceholder(fn func()) { t.onPastePlaceholder = fn }
@@ -86,6 +91,10 @@ func (t *Tray) onReady() {
 	t.connectItem = systray.AddMenuItem("Connect / 连接", "Connect to server")
 	t.disconnectItem = systray.AddMenuItem("Disconnect / 断开", "Disconnect from server")
 	t.historyItem = systray.AddMenuItem("Console / 控制中心", "Open local control center")
+	if supportsLogWindow() {
+		t.logWindowItem = systray.AddMenuItem("Logs / 日志窗口", "Open live log window")
+		t.logWindowItem.Enable()
+	}
 	t.placeholderItem = systray.AddMenuItem("Paste Local Placeholder / 粘贴占位符", "Paste the local placeholder path for the latest shared clipboard content")
 	t.realPasteItem = systray.AddMenuItem("Paste Real Content / 粘贴真实文件", "Paste the local real files for the latest shared clipboard content")
 	t.sendCurrentItem = systray.AddMenuItem("Send Current Clipboard / 发送当前剪贴板剪贴板", "Send current clipboard once")
@@ -102,6 +111,10 @@ func (t *Tray) onReady() {
 	}
 
 	go func() {
+		var logWindowClicked <-chan struct{}
+		if t.logWindowItem != nil {
+			logWindowClicked = t.logWindowItem.ClickedCh
+		}
 		for {
 			select {
 			case <-t.connectItem.ClickedCh:
@@ -115,6 +128,10 @@ func (t *Tray) onReady() {
 			case <-t.historyItem.ClickedCh:
 				if t.onOpenHistory != nil {
 					t.onOpenHistory()
+				}
+			case <-logWindowClicked:
+				if t.onOpenLogWindow != nil {
+					t.onOpenLogWindow()
 				}
 			case <-t.placeholderItem.ClickedCh:
 				if t.onPastePlaceholder != nil {

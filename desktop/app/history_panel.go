@@ -44,17 +44,39 @@ type historyPanelServer struct {
 	transfers  func() []historyPanelFileTransfer
 	events     func() []historyPanelEvent
 	needsSetup func() bool // 判断是否需要首次配置引导
+	webPasswordFn func() string // 返回当前控制面板密码（空=无需登录）
+	setWebPasswordFn func(password string) error // 设置/更新控制面板密码
 
 	mu     sync.Mutex
 	server *http.Server
 	url    string
+
+	sessionMu     sync.Mutex
+	sessionTokens map[string]time.Time // token -> 创建时间
 }
 
 func newHistoryPanelServer(m *history.Manager, replay func(id string, mode ReplayMode) error) *historyPanelServer {
 	return &historyPanelServer{
-		history: m,
-		replay:  replay,
+		history:       m,
+		replay:        replay,
+		sessionTokens: make(map[string]time.Time),
 	}
+}
+
+// SetWebPasswordProvider 设置Web密码提供回调。
+func (s *historyPanelServer) SetWebPasswordProvider(fn func() string) {
+	if s == nil {
+		return
+	}
+	s.webPasswordFn = fn
+}
+
+// SetWebPasswordSetter 设置保存web密码的回调。
+func (s *historyPanelServer) SetWebPasswordSetter(fn func(password string) error) {
+	if s == nil {
+		return
+	}
+	s.setWebPasswordFn = fn
 }
 
 func (s *historyPanelServer) SetSendCurrent(fn func() error) {
@@ -146,10 +168,10 @@ func (s *historyPanelServer) EnsureStarted(webPort int) (string, error) {
 		return "", fmt.Errorf("generate history panel token: %w", err)
 	}
 
-	// 使用配置的固定端口（默认 6666），如果被占用回退到随机端口
-	if webPort <= 0 || webPort > 65535 {
-		webPort = 6666
-	}
+		// 使用配置的固定端口（默认 16666），如果被占用回退到随机端口
+		if webPort <= 0 || webPort > 65535 {
+			webPort = constants.DefaultWebPort
+		}
 	listenAddr := fmt.Sprintf("127.0.0.1:%d", webPort)
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
@@ -166,13 +188,17 @@ func (s *historyPanelServer) EnsureStarted(webPort int) (string, error) {
 	mux.HandleFunc("/"+token, func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, basePath, http.StatusTemporaryRedirect)
 	})
-	mux.HandleFunc(basePath+"api/list", s.handleList)
-	mux.HandleFunc(basePath+"api/set-active", s.handleSetActive)
-	mux.HandleFunc(basePath+"api/replay", s.handleReplay)
-	mux.HandleFunc(basePath+"api/send-current", s.handleSendCurrent)
-	mux.HandleFunc(basePath+"api/connect", s.handleConnect)
-	mux.HandleFunc(basePath+"api/disconnect", s.handleDisconnect)
-	mux.HandleFunc(basePath+"api/settings", s.handleSettings)
+	// 登录端点不需要认证
+	mux.HandleFunc(basePath+"api/web-login", s.handleWebLogin)
+	// 需要认证的 API
+	mux.HandleFunc(basePath+"api/list", s.requireAuth(s.handleList, basePath))
+	mux.HandleFunc(basePath+"api/set-active", s.requireAuth(s.handleSetActive, basePath))
+	mux.HandleFunc(basePath+"api/replay", s.requireAuth(s.handleReplay, basePath))
+	mux.HandleFunc(basePath+"api/send-current", s.requireAuth(s.handleSendCurrent, basePath))
+	mux.HandleFunc(basePath+"api/connect", s.requireAuth(s.handleConnect, basePath))
+	mux.HandleFunc(basePath+"api/disconnect", s.requireAuth(s.handleDisconnect, basePath))
+	mux.HandleFunc(basePath+"api/settings", s.requireAuth(s.handleSettings, basePath))
+	mux.HandleFunc(basePath+"api/set-web-password", s.requireAuth(s.handleSetWebPassword, basePath))
 	mux.HandleFunc(basePath, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != basePath {
 			http.NotFound(w, r)
@@ -230,7 +256,7 @@ func (a *Application) openHistoryPanel() {
 		return
 	}
 
-	webPort := 6666
+	webPort := constants.DefaultWebPort
 	if a.cfg != nil && a.cfg.WebPort > 0 {
 		webPort = a.cfg.WebPort
 	}
@@ -302,6 +328,12 @@ func (s *historyPanelServer) handleIndex(w http.ResponseWriter, r *http.Request,
 		needsSetup = "true"
 	}
 	page = strings.ReplaceAll(page, "__NEEDS_SETUP__", needsSetup)
+	// 注入 web 密码状态标记
+	webPasswordSet := "false"
+	if s.isWebPasswordSet() {
+		webPasswordSet = "true"
+	}
+	page = strings.ReplaceAll(page, "__WEB_PASSWORD_SET__", webPasswordSet)
 	if _, err := io.WriteString(w, page); err != nil {
 		slog.Warn("history panel: failed to write index page", "error", err)
 	}
@@ -872,3 +904,159 @@ type historyPanelListItem struct {
 //go:embed history_panel.html
 var historyPanelHTML string
 
+const webSessionCookieName = "cc_web_session"
+const webSessionMaxAge = 24 * 60 * 60 // 24 小时
+
+// requireAuth 返回一个 HTTP handler 包装器，如果配置了 web 密码则需要先验证 session。
+func (s *historyPanelServer) requireAuth(next http.HandlerFunc, basePath string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.isWebPasswordSet() {
+			next(w, r)
+			return
+		}
+		cookie, err := r.Cookie(webSessionCookieName)
+		if err != nil || !s.isValidSession(cookie.Value) {
+			writeHistoryPanelJSON(w, http.StatusUnauthorized, map[string]any{
+				"ok":    false,
+				"error": "unauthorized",
+			})
+			return
+		}
+		next(w, r)
+	}
+}
+
+// isWebPasswordSet 检查是否配置了 web 密码。
+func (s *historyPanelServer) isWebPasswordSet() bool {
+	if s == nil || s.webPasswordFn == nil {
+		return false
+	}
+	return strings.TrimSpace(s.webPasswordFn()) != ""
+}
+
+// isValidSession 检查 session token 是否有效。
+func (s *historyPanelServer) isValidSession(token string) bool {
+	if token == "" {
+		return false
+	}
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	created, ok := s.sessionTokens[token]
+	if !ok {
+		return false
+	}
+	if time.Since(created) > time.Duration(webSessionMaxAge)*time.Second {
+		delete(s.sessionTokens, token)
+		return false
+	}
+	return true
+}
+
+// createSession 创建一个新的 session token。
+func (s *historyPanelServer) createSession() (string, error) {
+	token, err := historyPanelToken()
+	if err != nil {
+		return "", err
+	}
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	// 清理过期 session
+	for t, created := range s.sessionTokens {
+		if time.Since(created) > time.Duration(webSessionMaxAge)*time.Second {
+			delete(s.sessionTokens, t)
+		}
+	}
+	s.sessionTokens[token] = time.Now()
+	return token, nil
+}
+
+// handleWebLogin 处理控制面板登录请求。
+func (s *historyPanelServer) handleWebLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeHistoryPanelJSONError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		return
+	}
+	if r.Body == nil {
+		writeHistoryPanelJSONError(w, http.StatusBadRequest, errors.New("missing JSON body"))
+		return
+	}
+	defer r.Body.Close()
+
+	var input struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeHistoryPanelJSONError(w, http.StatusBadRequest, errors.New("invalid JSON body"))
+		return
+	}
+
+	if !s.isWebPasswordSet() {
+		// 未设密码，直接放行
+		writeHistoryPanelJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+
+	expected := ""
+	if s.webPasswordFn != nil {
+		expected = s.webPasswordFn()
+	}
+	if input.Password != expected {
+		slog.Warn("history panel: web login failed")
+		writeHistoryPanelJSONError(w, http.StatusUnauthorized, errors.New("invalid password"))
+		return
+	}
+
+	token, err := s.createSession()
+	if err != nil {
+		writeHistoryPanelJSONError(w, http.StatusInternalServerError, errors.New("session creation failed"))
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     webSessionCookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   webSessionMaxAge,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	slog.Info("history panel: web login success")
+	writeHistoryPanelJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleSetWebPassword 处理设置/更新控制面板密码。
+func (s *historyPanelServer) handleSetWebPassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeHistoryPanelJSONError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		return
+	}
+	if s.setWebPasswordFn == nil {
+		writeHistoryPanelJSONError(w, http.StatusServiceUnavailable, errors.New("set web password unavailable"))
+		return
+	}
+	if r.Body == nil {
+		writeHistoryPanelJSONError(w, http.StatusBadRequest, errors.New("missing JSON body"))
+		return
+	}
+	defer r.Body.Close()
+
+	var input struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeHistoryPanelJSONError(w, http.StatusBadRequest, errors.New("invalid JSON body"))
+		return
+	}
+
+	if err := s.setWebPasswordFn(input.Password); err != nil {
+		writeHistoryPanelJSONError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 清除所有已有 session，强制重新登录
+	s.sessionMu.Lock()
+	s.sessionTokens = make(map[string]time.Time)
+	s.sessionMu.Unlock()
+
+	writeHistoryPanelJSON(w, http.StatusOK, map[string]any{"ok": true})
+}

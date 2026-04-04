@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -27,7 +28,7 @@ import (
 )
 
 const (
-	fileTransferChunkSize        = 256 * 1024
+	fileTransferChunkSize        = 1024 * 1024
 	fileTransferArchive          = "payload.zip"
 	fileTransferRawPayload       = "payload.bin"
 	fileTransferExtracted        = "extracted"
@@ -46,31 +47,37 @@ const (
 var errMemoryArchiveTooLarge = errors.New("memory archive exceeds threshold")
 
 type outgoingTransfer struct {
-	Manifest      protocol.FileStubManifest
-	SourcePaths   []string
-	ArchiveMode   transferArchiveMode
-	ArchiveBytes  []byte
-	BaseDir       string
-	ArchivePath   string
-	ArchiveSHA256 string
-	ArchiveSize   int64
-	ChunkCount    int
-	cleanupTimer  *time.Timer
-	cleanupGen    uint64
-	sending       bool // 防止同一 transfer 的并发发送
+	Manifest        protocol.FileStubManifest
+	SourcePaths     []string
+	ArchiveMode     transferArchiveMode
+	ArchiveBytes    []byte
+	BaseDir         string
+	ArchivePath     string
+	ArchiveSHA256   string
+	ArchiveSize     int64
+	ChunkCount      int
+	cleanupTimer    *time.Timer
+	cleanupGen      uint64
+	SourceSignature string
+	sendingTargets  map[string]struct{} // 仅去重同一目标端的并发发送
+	prepareMu       sync.Mutex
 }
 
 type incomingTransfer struct {
-	Manifest      protocol.FileStubManifest
-	HistoryItemID string
-	ArchiveMode   transferArchiveMode
-	StorageMode   transferArchiveMode
-	ArchiveBytes  []byte
-	BaseDir       string
-	ArchivePath   string
-	ExtractDir    string
-	LastChunkIdx  int
-	TotalChunks   int
+	Manifest            protocol.FileStubManifest
+	HistoryItemID       string
+	ArchiveMode         transferArchiveMode
+	StorageMode         transferArchiveMode
+	ArchiveBytes        []byte
+	BaseDir             string
+	ArchivePath         string
+	ExtractDir          string
+	LastChunkIdx        int
+	TotalChunks         int
+	RequestedResumeFrom int
+	RequestActive       bool
+	Completing          bool
+	Completed           bool
 }
 
 type transferManager struct {
@@ -249,11 +256,12 @@ func plannedReplayTargetsForImageItem(item *history.HistoryItem) ([]string, erro
 			name += ".png"
 		}
 	}
-	reservedPath, err := reserveUniquePath(filepath.Join(tempDir, name))
+	// 幂等：直接使用原文件名，同名时覆盖写入
+	destPath, err := safeJoinUnderBase(tempDir, name)
 	if err != nil {
 		return nil, err
 	}
-	return []string{reservedPath}, nil
+	return []string{destPath}, nil
 }
 
 func plannedReplayTargetsForManifest(manifest *protocol.FileStubManifest, createdAt time.Time) ([]string, error) {
@@ -283,14 +291,22 @@ func plannedReplayTargetsForManifest(manifest *protocol.FileStubManifest, create
 			candidate = fmt.Sprintf("folder_%s", timestamp.Format("20060102150405"))
 		}
 	default:
-		candidate = timestamp.Format("20060102150405")
+		candidate = replayTimestampDirName(timestamp)
 	}
 
-	reservedPath, err := reserveUniquePath(filepath.Join(tempDir, candidate))
+	// 幂等：直接使用原文件名，覆盖写入
+	destPath, err := safeJoinUnderBase(tempDir, candidate)
 	if err != nil {
 		return nil, err
 	}
-	return []string{reservedPath}, nil
+	return []string{destPath}, nil
+}
+
+func replayTimestampDirName(timestamp time.Time) string {
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	return fmt.Sprintf("%s_%09d", timestamp.Format("20060102150405"), timestamp.Nanosecond())
 }
 
 func estimatePathBytes(path string) int64 {
@@ -308,6 +324,67 @@ func estimatePathBytes(path string) int64 {
 	return total
 }
 
+func sourcePathsSignature(paths []string) (string, error) {
+	if len(paths) == 0 {
+		return "", errors.New("no source paths for signature")
+	}
+	normalized := append([]string(nil), paths...)
+	for i, source := range normalized {
+		normalized[i] = filepath.Clean(source)
+	}
+	sort.Strings(normalized)
+
+	hash := sha256.New()
+	for _, source := range normalized {
+		if err := appendSourcePathSignature(hash, source, filepath.Base(source)); err != nil {
+			return "", err
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func appendSourcePathSignature(dst io.Writer, sourcePath, relName string) error {
+	info, err := os.Lstat(sourcePath)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("symlink not supported in transfer: %s", sourcePath)
+	}
+
+	normalizedRel := filepath.ToSlash(relName)
+	if info.IsDir() {
+		if _, err := fmt.Fprintf(dst, "D\x00%s\x00", normalizedRel); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(sourcePath)
+		if err != nil {
+			return err
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+		for _, entry := range entries {
+			if err := appendSourcePathSignature(dst, filepath.Join(sourcePath, entry.Name()), filepath.Join(relName, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if _, err := fmt.Fprintf(dst, "F\x00%s\x00%d\x00", normalizedRel, info.Size()); err != nil {
+		return err
+	}
+	file, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := io.Copy(dst, file); err != nil {
+		return err
+	}
+	_, err = io.WriteString(dst, "\x00")
+	return err
+}
+
 func (m *transferManager) RegisterOutgoing(paths []string, sourceDevice string) (*outgoingTransfer, error) {
 	return m.RegisterOutgoingWithKind(paths, sourceDevice, "")
 }
@@ -316,12 +393,31 @@ func (m *transferManager) RegisterOutgoingWithKind(paths []string, sourceDevice 
 	if len(paths) == 0 {
 		return nil, errors.New("no source paths for outgoing transfer")
 	}
+	signature, err := sourcePathsSignature(paths)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	for _, existing := range m.outgoing {
+		if existing == nil {
+			continue
+		}
+		if existing.SourceSignature == signature {
+			m.mu.Unlock()
+			return existing, nil
+		}
+	}
+	m.mu.Unlock()
+
 	transferID := uuid.NewString()
 	entryID := uuid.NewString()
 	manifest := createFileStubManifestWithKind(entryID, transferID, m.sessionID, sourceDevice, kindOverride, paths)
 	transfer := &outgoingTransfer{
-		Manifest:    manifest,
-		SourcePaths: append([]string(nil), paths...),
+		Manifest:        manifest,
+		SourcePaths:     append([]string(nil), paths...),
+		SourceSignature: signature,
+		sendingTargets:  make(map[string]struct{}),
 	}
 
 	m.mu.Lock()
@@ -337,10 +433,18 @@ func (m *transferManager) GetOutgoing(transferID string) *outgoingTransfer {
 	if transfer == nil {
 		return nil
 	}
-	copyTransfer := *transfer
-	copyTransfer.SourcePaths = append([]string(nil), transfer.SourcePaths...)
-	copyTransfer.ArchiveBytes = append([]byte(nil), transfer.ArchiveBytes...)
-	return &copyTransfer
+	return &outgoingTransfer{
+		Manifest:        transfer.Manifest,
+		SourcePaths:     append([]string(nil), transfer.SourcePaths...),
+		ArchiveMode:     transfer.ArchiveMode,
+		ArchiveBytes:    append([]byte(nil), transfer.ArchiveBytes...),
+		BaseDir:         transfer.BaseDir,
+		ArchivePath:     transfer.ArchivePath,
+		ArchiveSHA256:   transfer.ArchiveSHA256,
+		ArchiveSize:     transfer.ArchiveSize,
+		ChunkCount:      transfer.ChunkCount,
+		SourceSignature: transfer.SourceSignature,
+	}
 }
 
 func (m *transferManager) getOutgoingMutable(transferID string) *outgoingTransfer {
@@ -476,6 +580,10 @@ func (m *transferManager) releaseOutgoingArchive(transferID string) {
 	m.mu.Lock()
 	transfer := m.outgoing[transferID]
 	if transfer != nil {
+		if len(transfer.sendingTargets) > 0 {
+			m.mu.Unlock()
+			return
+		}
 		if transfer.cleanupTimer != nil {
 			transfer.cleanupTimer.Stop()
 			transfer.cleanupTimer = nil
@@ -562,8 +670,8 @@ func (a *Application) handleFileTransferMessage(clipData *protocol.ClipboardData
 		if complete.TargetSessionID != a.appSessionID() {
 			return true, nil
 		}
-		// handleFileComplete 中 completePendingReplayMode 可能调用 simulateAutoPaste（有 300ms sleep），
-		// 也需要异步执行，避免阻塞 WebSocket 读循环。
+		// handleFileComplete 可能执行落盘、状态更新和剪贴板写回等操作，
+		// 需要异步执行，避免阻塞 WebSocket 读循环。
 		go func() {
 			if err := a.handleFileComplete(complete); err != nil {
 				slog.Warn("应用：处理文件传输完成失败", "transfer_id", complete.TransferID, "error", err)
@@ -602,11 +710,27 @@ func (a *Application) requestFileTransfer(item *history.HistoryItem) error {
 	if item.State == history.StateFailed && item.LastChunkIdx >= 0 {
 		resumeFrom = item.LastChunkIdx + 1
 	}
+	requestAlreadyActive := false
 	if _, err := a.transfers.mutateIncoming(manifest.TransferID, func(incoming *incomingTransfer) error {
 		incoming.Manifest = *manifest
+		incoming.RequestedResumeFrom = resumeFrom
+		if incoming.RequestActive {
+			requestAlreadyActive = true
+			return nil
+		}
+		incoming.RequestActive = true
 		return nil
 	}); err != nil {
 		a.transfers.RegisterIncoming(*manifest, item.ID, item.LastChunkIdx)
+		_, _ = a.transfers.mutateIncoming(manifest.TransferID, func(incoming *incomingTransfer) error {
+			incoming.RequestedResumeFrom = resumeFrom
+			incoming.RequestActive = true
+			return nil
+		})
+	}
+	if requestAlreadyActive {
+		slog.Debug("应用：跳过重复的文件传输请求，已有请求进行中", "transfer_id", manifest.TransferID)
+		return nil
 	}
 
 	request := protocol.FileRequest{
@@ -621,6 +745,10 @@ func (a *Application) requestFileTransfer(item *history.HistoryItem) error {
 	}
 	prevState := item.State
 	if !a.history.UpdateState(item.ID, history.StateDownloading) && item.State != history.StateDownloading {
+		_, _ = a.transfers.mutateIncoming(manifest.TransferID, func(incoming *incomingTransfer) error {
+			incoming.RequestActive = false
+			return nil
+		})
 		return fmt.Errorf("update item %s to downloading", item.ID)
 	}
 	attrs := []any{
@@ -632,6 +760,10 @@ func (a *Application) requestFileTransfer(item *history.HistoryItem) error {
 	}
 	slog.Info("应用：开始请求文件传输", attrs...)
 	if err := a.sendClipboardData(data); err != nil {
+		_, _ = a.transfers.mutateIncoming(manifest.TransferID, func(incoming *incomingTransfer) error {
+			incoming.RequestActive = false
+			return nil
+		})
 		if prevState != history.StateDownloading {
 			_, _ = a.history.Mutate(item.ID, func(next *history.HistoryItem) error {
 				next.State = prevState
@@ -657,28 +789,36 @@ func (a *Application) handleFileRequest(request *protocol.FileRequest) error {
 			"transfer_id", request.TransferID)
 		return nil
 	}
-	if transfer.sending {
+	if transfer.sendingTargets == nil {
+		transfer.sendingTargets = make(map[string]struct{})
+	}
+	if _, exists := transfer.sendingTargets[request.TargetSessionID]; exists {
 		a.transfers.mu.Unlock()
-		slog.Debug("应用：跳过重复的文件传输请求，已有发送进行中", "transfer_id", request.TransferID)
+		slog.Debug("应用：跳过重复的文件传输请求，目标端已有发送进行中",
+			"transfer_id", request.TransferID,
+			"target_session_id", request.TargetSessionID)
 		return nil
 	}
-	transfer.sending = true
+	transfer.sendingTargets[request.TargetSessionID] = struct{}{}
 	a.transfers.mu.Unlock()
 	defer func() {
 		a.transfers.mu.Lock()
 		if t := a.transfers.getOutgoingMutable(request.TransferID); t != nil {
-			t.sending = false
+			delete(t.sendingTargets, request.TargetSessionID)
 		}
 		a.transfers.mu.Unlock()
 	}()
 
+	transfer.prepareMu.Lock()
 	resumeFrom := request.ResumeFromChunk
 	if !hasReusableOutgoingArchive(transfer) {
 		resumeFrom = 0
 	}
 	if err := a.prepareOutgoingArchive(transfer); err != nil {
+		transfer.prepareMu.Unlock()
 		return a.sendFileError(request.TransferID, request.TargetSessionID, "archive_failed", err.Error(), true)
 	}
+	transfer.prepareMu.Unlock()
 	attrs := []any{
 		"transfer_id", request.TransferID,
 		"target_session_id", request.TargetSessionID,
@@ -1077,7 +1217,12 @@ func (a *Application) handleFileChunk(chunk *protocol.FileChunk) error {
 	if chunk == nil {
 		return nil
 	}
+	duplicateChunk := false
 	transfer, err := a.transfers.mutateIncoming(chunk.TransferID, func(transfer *incomingTransfer) error {
+		if transfer.Completed {
+			duplicateChunk = true
+			return nil
+		}
 		chunkMode := normalizeArchiveMode(chunk.ArchiveMode)
 		if transfer.BaseDir == "" {
 			baseDir, err := newTransferTempDir(chunk.TransferID)
@@ -1098,6 +1243,14 @@ func (a *Application) handleFileChunk(chunk *protocol.FileChunk) error {
 		if transfer.StorageMode == "" {
 			transfer.StorageMode = chunkMode
 		}
+		expectedIdx := transfer.LastChunkIdx + 1
+		if chunk.ChunkIndex == 0 && transfer.RequestedResumeFrom > 0 {
+			expectedIdx = 0
+		}
+		if chunk.ChunkIndex < expectedIdx {
+			duplicateChunk = true
+			return nil
+		}
 		if transfer.ArchiveMode != chunkMode && chunk.ChunkIndex != 0 {
 			return fmt.Errorf("unexpected archive mode change %q -> %q", transfer.ArchiveMode, chunkMode)
 		}
@@ -1113,7 +1266,6 @@ func (a *Application) handleFileChunk(chunk *protocol.FileChunk) error {
 				_ = os.Remove(transfer.ArchivePath)
 			}
 		}
-		expectedIdx := transfer.LastChunkIdx + 1
 		if chunk.ChunkIndex != expectedIdx {
 			return fmt.Errorf("unexpected chunk index %d, want %d", chunk.ChunkIndex, expectedIdx)
 		}
@@ -1164,10 +1316,15 @@ func (a *Application) handleFileChunk(chunk *protocol.FileChunk) error {
 		}
 		transfer.LastChunkIdx = chunk.ChunkIndex
 		transfer.TotalChunks = chunk.TotalChunks
+		transfer.RequestedResumeFrom = 0
 		return nil
 	})
 	if err != nil {
 		return a.failIncomingTransfer(chunk.TransferID, err)
+	}
+	if duplicateChunk {
+		slog.Debug("应用：忽略重复的文件分片", "transfer_id", chunk.TransferID, "chunk_index", chunk.ChunkIndex)
+		return nil
 	}
 	_, _ = a.history.MutateByTransferID(chunk.TransferID, func(item *history.HistoryItem) error {
 		item.LastChunkIdx = transfer.LastChunkIdx
@@ -1190,8 +1347,20 @@ func (a *Application) handleFileComplete(complete *protocol.FileComplete) error 
 	if complete == nil {
 		return nil
 	}
-	transfer := a.transfers.GetIncoming(complete.TransferID)
-	if transfer == nil {
+	duplicateComplete := false
+	transfer, err := a.transfers.mutateIncoming(complete.TransferID, func(transfer *incomingTransfer) error {
+		if transfer.Completed || transfer.Completing {
+			duplicateComplete = true
+			return nil
+		}
+		transfer.Completing = true
+		return nil
+	})
+	if err != nil || transfer == nil {
+		return nil
+	}
+	if duplicateComplete {
+		slog.Debug("应用：忽略重复的文件传输完成消息", "transfer_id", complete.TransferID)
 		return nil
 	}
 	sum, size, err := incomingArchiveSHA256(transfer)
@@ -1242,9 +1411,15 @@ func (a *Application) handleFileComplete(complete *protocol.FileComplete) error 
 		}
 		storedItem = updatedItem
 	}
-	localPaths, err := materializeIncomingTransfer(transfer, storedItem)
+	localPaths, reusedExisting, err := tryReuseIncomingMaterializedPaths(transfer, storedItem, sum, size)
 	if err != nil {
 		return a.failIncomingTransfer(complete.TransferID, err)
+	}
+	if !reusedExisting {
+		localPaths, err = materializeIncomingTransfer(transfer, storedItem)
+		if err != nil {
+			return a.failIncomingTransfer(complete.TransferID, err)
+		}
 	}
 	updated, err := a.history.MutateByTransferID(complete.TransferID, func(item *history.HistoryItem) error {
 		item.State = history.StateReadyToPaste
@@ -1256,6 +1431,12 @@ func (a *Application) handleFileComplete(complete *protocol.FileComplete) error 
 		item.PendingReplayMode = string(ReplayModeNone)
 		item.LastChunkIdx = transfer.LastChunkIdx
 		item.ErrorMessage = ""
+		return nil
+	})
+	_, _ = a.transfers.mutateIncoming(complete.TransferID, func(incoming *incomingTransfer) error {
+		incoming.RequestActive = false
+		incoming.Completing = false
+		incoming.Completed = true
 		return nil
 	})
 	a.transfers.deleteIncomingArchive(complete.TransferID)
@@ -1281,6 +1462,46 @@ func (a *Application) handleFileComplete(complete *protocol.FileComplete) error 
 		slog.Info("应用：文件传输已完成", attrs...)
 	}
 	return nil
+}
+
+func tryReuseIncomingMaterializedPaths(transfer *incomingTransfer, item *history.HistoryItem, archiveSHA256 string, archiveSize int64) ([]string, bool, error) {
+	if transfer == nil || item == nil || !usesRawTransfer(transfer.Manifest) || len(item.ReservedPaths) == 0 {
+		return nil, false, nil
+	}
+	targetPath, err := normalizeReplayTargetPath(item.ReservedPaths[0])
+	if err != nil {
+		return nil, false, err
+	}
+	match, err := fileMatchesArchive(targetPath, archiveSHA256, archiveSize)
+	if err != nil {
+		return nil, false, err
+	}
+	if !match {
+		return nil, false, nil
+	}
+	slog.Info("应用：目标路径已存在同名同内容文件，直接复用",
+		"transfer_id", transfer.Manifest.TransferID,
+		"path", targetPath,
+	)
+	return []string{targetPath}, true, nil
+}
+
+func fileMatchesArchive(path string, archiveSHA256 string, archiveSize int64) (bool, error) {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.IsDir() || info.Size() != archiveSize {
+		return false, nil
+	}
+	sum, size, err := fileSHA256(path)
+	if err != nil {
+		return false, err
+	}
+	return size == archiveSize && sum == archiveSHA256, nil
 }
 
 func writeArchiveBytesToDisk(path string, data []byte, truncate bool) error {
@@ -1352,6 +1573,10 @@ func materializeIncomingTransfer(transfer *incomingTransfer, item *history.Histo
 			return nil, err
 		}
 		reservedPaths = paths
+	}
+	reservedPaths, err := normalizeReplayTargetPaths(reservedPaths)
+	if err != nil {
+		return nil, err
 	}
 	if usesRawTransfer(*manifest) {
 		if len(reservedPaths) == 0 {
@@ -1614,12 +1839,22 @@ func extractZipBytesSafely(archiveBytes []byte, targetDir string) ([]string, err
 }
 
 func extractZipReaderSafely(reader *zip.Reader, targetDir string) ([]string, error) {
+	requiredBytes, err := zipAdvertisedExtractBytes(reader)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureExtractDiskSpaceForTarget(targetDir, requiredBytes); err != nil {
+		return nil, err
+	}
+
 	topLevel := make(map[string]string)
+	extractedBytes := uint64(0)
 	for _, file := range reader.File {
-		if strings.Contains(file.Name, "..") {
+		normalizedName := strings.ReplaceAll(file.Name, "\\", "/")
+		if hasPathTraversalComponent(normalizedName) {
 			return nil, fmt.Errorf("zip entry contains parent traversal: %s", file.Name)
 		}
-		cleanName := path.Clean(file.Name)
+		cleanName := path.Clean(normalizedName)
 		if path.IsAbs(cleanName) || cleanName == "." {
 			return nil, fmt.Errorf("invalid zip entry path: %s", file.Name)
 		}
@@ -1652,7 +1887,7 @@ func extractZipReaderSafely(reader *zip.Reader, targetDir string) ([]string, err
 				rc.Close()
 				return nil, err
 			}
-			_, copyErr := io.Copy(out, rc)
+			written, copyErr := copyReaderWithLimit(out, rc, file.UncompressedSize64)
 			closeErr := out.Close()
 			rc.Close()
 			if copyErr != nil {
@@ -1660,6 +1895,16 @@ func extractZipReaderSafely(reader *zip.Reader, targetDir string) ([]string, err
 			}
 			if closeErr != nil {
 				return nil, closeErr
+			}
+			if written != file.UncompressedSize64 {
+				return nil, fmt.Errorf("zip entry size mismatch: %s", file.Name)
+			}
+			if extractedBytes > ^uint64(0)-written {
+				return nil, fmt.Errorf("zip extraction size overflow: %s", file.Name)
+			}
+			extractedBytes += written
+			if extractedBytes > requiredBytes {
+				return nil, fmt.Errorf("zip extraction exceeded advertised byte limit: %s", file.Name)
 			}
 		}
 		top := strings.Split(filepath.FromSlash(sanitizedName), string(filepath.Separator))[0]
@@ -1678,10 +1923,13 @@ func extractZipReaderSafely(reader *zip.Reader, targetDir string) ([]string, err
 // sanitizeFileName 清理单个文件名组件，去除不安全字符。
 func sanitizeFileName(name string) string {
 	name = strings.ReplaceAll(name, "\x00", "")
-	for _, c := range []string{"<", ">", ":", "\"", "|", "?", "*"} {
+	for _, c := range []string{"/", "\\", "<", ">", ":", "\"", "|", "?", "*"} {
 		name = strings.ReplaceAll(name, c, "_")
 	}
 	name = strings.Trim(name, " .")
+	if name == "." || name == ".." {
+		name = ""
+	}
 	if len(name) > 255 {
 		name = name[:255]
 	}
@@ -1693,11 +1941,139 @@ func sanitizeFileName(name string) string {
 
 // sanitizeArchiveEntryPath 仅清理路径中的各级文件名组件，不修改目录分隔符语义。
 func sanitizeArchiveEntryPath(entryPath string) string {
+	entryPath = strings.ReplaceAll(entryPath, "\\", "/")
 	parts := strings.Split(entryPath, "/")
 	for i, part := range parts {
 		parts[i] = sanitizeFileName(part)
 	}
 	return strings.Join(parts, "/")
+}
+
+func normalizeReplayTargetPath(targetPath string) (string, error) {
+	baseDir := replayTempRootDir()
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		return "", err
+	}
+	cleaned := filepath.Clean(strings.TrimSpace(targetPath))
+	if cleaned == "" || cleaned == "." {
+		return "", errors.New("empty replay target path")
+	}
+	if filepath.IsAbs(cleaned) {
+		return ensurePathWithinBase(baseDir, cleaned)
+	}
+	return safeJoinUnderBase(baseDir, cleaned)
+}
+
+func normalizeReplayTargetPaths(paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	normalized := make([]string, 0, len(paths))
+	for _, path := range paths {
+		next, err := normalizeReplayTargetPath(path)
+		if err != nil {
+			return nil, err
+		}
+		normalized = append(normalized, next)
+	}
+	return normalized, nil
+}
+
+func safeJoinUnderBase(baseDir string, elems ...string) (string, error) {
+	return ensurePathWithinBase(baseDir, filepath.Join(append([]string{baseDir}, elems...)...))
+}
+
+func ensurePathWithinBase(baseDir, candidate string) (string, error) {
+	baseAbs, err := filepath.Abs(filepath.Clean(baseDir))
+	if err != nil {
+		return "", err
+	}
+	candidateAbs, err := filepath.Abs(filepath.Clean(candidate))
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(baseAbs, candidateAbs)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("path escapes replay temp dir: %s", candidate)
+	}
+	return candidateAbs, nil
+}
+
+func hasPathTraversalComponent(input string) bool {
+	for _, part := range strings.Split(strings.ReplaceAll(input, "\\", "/"), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func zipAdvertisedExtractBytes(reader *zip.Reader) (uint64, error) {
+	if reader == nil {
+		return 0, errors.New("nil zip reader")
+	}
+	var total uint64
+	for _, file := range reader.File {
+		if file == nil || file.FileInfo().IsDir() {
+			continue
+		}
+		if total > ^uint64(0)-file.UncompressedSize64 {
+			return 0, fmt.Errorf("zip advertised size overflow: %s", file.Name)
+		}
+		total += file.UncompressedSize64
+	}
+	return total, nil
+}
+
+func ensureExtractDiskSpaceForTarget(targetDir string, requiredBytes uint64) error {
+	if requiredBytes == 0 {
+		return nil
+	}
+	checkPath, err := diskSpaceCheckPath(targetDir)
+	if err != nil {
+		return fmt.Errorf("resolve disk space check path: %w", err)
+	}
+	availableBytes, err := availableDiskSpace(checkPath)
+	if err != nil {
+		return fmt.Errorf("check available disk space: %w", err)
+	}
+	if availableBytes < requiredBytes {
+		return fmt.Errorf(
+			"insufficient disk space for extraction: available=%d required=%d target=%s",
+			availableBytes, requiredBytes, targetDir,
+		)
+	}
+	return nil
+}
+
+func copyReaderWithLimit(dst io.Writer, src io.Reader, limit uint64) (uint64, error) {
+	buf := make([]byte, 32*1024)
+	var written uint64
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			if uint64(n) > limit-written {
+				return written, errors.New("reader exceeded advertised size")
+			}
+			wn, writeErr := dst.Write(buf[:n])
+			written += uint64(wn)
+			if writeErr != nil {
+				return written, writeErr
+			}
+			if wn != n {
+				return written, io.ErrShortWrite
+			}
+		}
+		if err == io.EOF {
+			return written, nil
+		}
+		if err != nil {
+			return written, err
+		}
+	}
 }
 
 func (a *Application) handleFileError(fileErr *protocol.FileError) error {
@@ -1728,5 +2104,10 @@ func (a *Application) failIncomingTransfer(transferID string, err error) error {
 	if mutateErr != nil {
 		return mutateErr
 	}
+	_, _ = a.transfers.mutateIncoming(transferID, func(incoming *incomingTransfer) error {
+		incoming.RequestActive = false
+		incoming.Completing = false
+		return nil
+	})
 	return err
 }

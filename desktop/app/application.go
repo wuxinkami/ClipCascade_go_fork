@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -41,6 +42,7 @@ type Application struct {
 	historyPanel *historyPanelServer
 	hotkeys      hotkeyManager
 	tray         *ui.Tray
+	logFilePath  string
 	sessionID    string
 	transfers    *transferManager
 	ctx          context.Context
@@ -61,6 +63,9 @@ type Application struct {
 
 	controlEventMu sync.Mutex
 	controlEvents  []historyPanelEvent
+
+	imageMaterializeMu   sync.Mutex
+	imageMaterializeJobs map[string]*imageMaterializeJob
 }
 
 var appPasteClipboardPayload = func(a *Application, payload string, payloadType string, fileName string) {
@@ -70,20 +75,33 @@ var appPasteClipboardPayload = func(a *Application, payload string, payloadType 
 	a.clip.Paste(payload, payloadType, fileName)
 }
 
+type clipboardWriteReason string
+
+const (
+	clipboardWriteReasonIncomingAuto   clipboardWriteReason = "incoming_auto"
+	clipboardWriteReasonIncomingLegacy clipboardWriteReason = "incoming_legacy"
+	clipboardWriteReasonReplayText     clipboardWriteReason = "replay_text"
+	clipboardWriteReasonReplayPath     clipboardWriteReason = "replay_path_placeholder"
+	clipboardWriteReasonReplayReal     clipboardWriteReason = "replay_real_content"
+)
+
+var appLocalUsableIPv4Networks = localUsableIPv4Networks
+
 // New 创建一个新的 Application 实例。
 func New(cfg *config.Config) *Application {
 	ctx, cancel := context.WithCancel(context.Background())
 	jar, _ := cookiejar.New(nil)
 
 	app := &Application{
-		cfg:       cfg,
-		clip:      clipboard.NewManager(),
-		history:   history.NewManager(0),
-		hotkeys:   newHotkeyManager(),
-		tray:      ui.NewTray(),
-		sessionID: uuid.NewString(),
-		ctx:       ctx,
-		cancel:    cancel,
+		cfg:         cfg,
+		clip:        clipboard.NewManager(),
+		history:     history.NewManager(0),
+		hotkeys:     newHotkeyManager(),
+		tray:        ui.NewTray(),
+		logFilePath: config.LogFilePath(),
+		sessionID:   uuid.NewString(),
+		ctx:         ctx,
+		cancel:      cancel,
 		httpClient: &http.Client{
 			Jar:     jar,
 			Timeout: 15 * time.Second,
@@ -114,6 +132,13 @@ func New(cfg *config.Config) *Application {
 	app.historyPanel.SetNeedsSetup(func() bool {
 		return app.cfg.Username == "" || app.cfg.Password == ""
 	})
+	app.historyPanel.SetWebPasswordProvider(func() string {
+		return app.cfg.WebPassword
+	})
+	app.historyPanel.SetWebPasswordSetter(func(password string) error {
+		app.cfg.WebPassword = password
+		return app.cfg.Save()
+	})
 	app.clip.SetNotifier(ui.Notify)
 	return app
 }
@@ -142,6 +167,7 @@ func (a *Application) Run() {
 		a.disconnect()
 	})
 	a.tray.OnOpenHistory(func() { go a.triggerOpenHistoryPanel() })
+	a.tray.OnOpenLogWindow(func() { go a.triggerOpenLogWindow() })
 	a.tray.OnReady(func() {
 		a.refreshReplayActiveAvailability()
 	})
@@ -209,6 +235,9 @@ func (a *Application) discoverServer() ([]string, error) {
 			if entry != nil {
 				// 收集该服务条目下的所有 IPv4 地址
 				for _, ip := range entry.AddrIPv4 {
+					if !isUsableDiscoveredIPv4(ip) {
+						continue
+					}
 					url := fmt.Sprintf("http://%s:%d", ip, entry.Port)
 					if !seen[url] {
 						foundURLs = append(foundURLs, url)
@@ -219,6 +248,64 @@ func (a *Application) discoverServer() ([]string, error) {
 			}
 		}
 	}
+}
+
+func isUsableDiscoveredIPv4(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	ip = ip.To4()
+	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.IsMulticast() {
+		return false
+	}
+	for _, network := range appLocalUsableIPv4Networks() {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func localUsableIPv4Networks() []*net.IPNet {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	networks := make([]*net.IPNet, 0)
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		name := strings.ToLower(iface.Name)
+		if strings.HasPrefix(name, "docker") ||
+			strings.HasPrefix(name, "br-") ||
+			strings.Contains(name, "podman") ||
+			strings.Contains(name, "veth") ||
+			strings.Contains(name, "virbr") ||
+			strings.Contains(name, "zt") ||
+			strings.Contains(name, "tun") ||
+			strings.Contains(name, "tap") {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok || ipNet == nil {
+				continue
+			}
+			if ipNet.IP == nil || ipNet.IP.To4() == nil {
+				continue
+			}
+			networks = append(networks, &net.IPNet{
+				IP:   ipNet.IP.Mask(ipNet.Mask),
+				Mask: ipNet.Mask,
+			})
+		}
+	}
+	return networks
 }
 
 // connect 执行 login → 获取加密密钥 → 启动 WebSocket → 开始剪贴板监控。
@@ -494,7 +581,11 @@ func (a *Application) onReceive(body string) {
 		if names := clipboardLogNames(clipData); names != "" {
 			attrs = append(attrs, "文件", names)
 		} else if clipData.Type == constants.TypeImage {
-			attrs = append(attrs, "文件", "[截图]")
+			if clipData.FileName != "" {
+				attrs = append(attrs, "文件", clipData.FileName)
+			} else {
+				attrs = append(attrs, "文件", "[截图]")
+			}
 		}
 		slog.Info("应用：收到剪贴板更新并已加入历史", attrs...)
 		// 文本和图片都需要在“异机接收”场景立即写入系统剪贴板。
@@ -516,8 +607,9 @@ func (a *Application) onReceive(body string) {
 			attrs = append(attrs, "文件", "[截图]")
 		}
 		slog.Info("应用：收到旧版剪贴板更新，继续走兼容直贴路径", attrs...)
-		a.clip.Paste(clipData.Payload, clipData.Type, clipData.FileName)
-		slog.Debug("应用：已通过兼容路径接收并粘贴", "类型", clipData.Type, "大小", len(clipData.Payload))
+		if a.writeClipboardPayloadIfAllowed(clipboardWriteReasonIncomingLegacy, clipData) {
+			slog.Debug("应用：已通过兼容路径接收并粘贴", "类型", clipData.Type, "大小", len(clipData.Payload))
+		}
 		return
 	default:
 		slog.Warn("应用：收到不支持的剪贴板类型，已忽略", "类型", clipData.Type)
@@ -526,28 +618,50 @@ func (a *Application) onReceive(body string) {
 }
 
 func (a *Application) shouldWriteReceivedClipboardToSystem(clipData *protocol.ClipboardData) bool {
+	return a.isClipboardWriteAllowed(clipboardWriteReasonIncomingAuto, clipData)
+}
+
+func (a *Application) isClipboardWriteAllowed(reason clipboardWriteReason, clipData *protocol.ClipboardData) bool {
 	if a == nil || a.clip == nil || clipData == nil {
 		return false
 	}
-	if clipData.Type != constants.TypeText && clipData.Type != constants.TypeImage {
+
+	switch reason {
+	case clipboardWriteReasonIncomingAuto, clipboardWriteReasonIncomingLegacy:
+		if clipData.Type != constants.TypeText && clipData.Type != constants.TypeImage {
+			return false
+		}
+		sourceSessionID := clipboardSourceSessionID(clipData)
+		if sourceSessionID == "" {
+			// 兼容旧客户端：未携带来源会话时，按异机消息处理。
+			return true
+		}
+		return sourceSessionID != a.appSessionID()
+	case clipboardWriteReasonReplayText, clipboardWriteReasonReplayPath, clipboardWriteReasonReplayReal:
+		return true
+	default:
 		return false
 	}
-	sourceSessionID := clipboardSourceSessionID(clipData)
-	if sourceSessionID == "" {
-		// 兼容旧客户端：未携带来源会话时，按异机消息处理。
-		return true
+}
+
+func (a *Application) writeClipboardPayloadIfAllowed(reason clipboardWriteReason, clipData *protocol.ClipboardData) bool {
+	if !a.isClipboardWriteAllowed(reason, clipData) {
+		if clipData != nil {
+			slog.Debug("应用：统一守卫阻止系统剪贴板写入",
+				"reason", reason,
+				"type", clipData.Type,
+				"source_session_id", clipboardSourceSessionID(clipData),
+			)
+		}
+		return false
 	}
-	return sourceSessionID != a.appSessionID()
+	appPasteClipboardPayload(a, clipData.Payload, clipData.Type, clipData.FileName)
+	return true
 }
 
 func (a *Application) handleLocalClipboardCapture(capture *clipboard.CaptureData) {
 	if a == nil || capture == nil {
 		return
-	}
-	if capture.Type == constants.TypeImage && len(capture.Paths) == 1 && a.clip != nil {
-		if err := a.clip.StageImageFile(capture.Paths[0]); err != nil {
-			slog.Warn("application: failed to stage copied image file into system clipboard", "path", capture.Paths[0], "error", err)
-		}
 	}
 	if err := a.sendCapture(capture); err != nil {
 		if errors.Is(err, ErrClipboardTransportUnavailable) {
@@ -647,13 +761,18 @@ func (a *Application) isReconnecting() bool {
 
 // disconnect disconnects from the server.
 func (a *Application) disconnect() {
-	if a.stomp != nil {
-		a.stomp.Close()
-		a.stomp = nil
+	a.connMu.Lock()
+	stomp := a.stomp
+	p2p := a.p2p
+	a.stomp = nil
+	a.p2p = nil
+	a.connMu.Unlock()
+
+	if stomp != nil {
+		stomp.Close()
 	}
-	if a.p2p != nil {
-		a.p2p.Close()
-		a.p2p = nil
+	if p2p != nil {
+		p2p.Close()
 	}
 	a.tray.SetStatus("Disconnected / 未连接")
 	ui.Notify("ClipCascade", "Disconnected from server / 已从服务器断开连接")

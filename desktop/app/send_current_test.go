@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"image"
 	"image/color"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/clipcascade/desktop/clipboard"
 	"github.com/clipcascade/desktop/config"
+	"github.com/clipcascade/desktop/history"
 	"github.com/clipcascade/pkg/constants"
 	"github.com/clipcascade/pkg/protocol"
 )
@@ -125,6 +127,81 @@ func TestDispatchClipboardBodyFallsBackToStompWhenNoP2PPeerReady(t *testing.T) {
 	}
 }
 
+func TestDispatchClipboardBodySingleRoutePrefersP2PWithoutStompDuplicate(t *testing.T) {
+	stompCalls := 0
+	p2pCalls := 0
+
+	result, err := dispatchClipboardBodySingleRoute(
+		"payload",
+		func(payload string) int {
+			p2pCalls++
+			return 1
+		},
+		func() bool { return true },
+		func(payload string) error {
+			stompCalls++
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("dispatchClipboardBodySingleRoute() error = %v", err)
+	}
+	if !result.P2PSent || result.StompSent {
+		t.Fatalf("result = %#v, want P2P only", result)
+	}
+	if p2pCalls != 1 {
+		t.Fatalf("p2pCalls = %d, want 1", p2pCalls)
+	}
+	if stompCalls != 0 {
+		t.Fatalf("stompCalls = %d, want 0", stompCalls)
+	}
+}
+
+func TestDispatchClipboardBodySingleRouteFallsBackToStomp(t *testing.T) {
+	stompCalls := 0
+	result, err := dispatchClipboardBodySingleRoute(
+		"payload",
+		func(payload string) int { return 0 },
+		func() bool { return true },
+		func(payload string) error {
+			stompCalls++
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("dispatchClipboardBodySingleRoute() error = %v", err)
+	}
+	if result.P2PSent || !result.StompSent {
+		t.Fatalf("result = %#v, want STOMP only", result)
+	}
+	if stompCalls != 1 {
+		t.Fatalf("stompCalls = %d, want 1", stompCalls)
+	}
+}
+
+func TestTargetSessionIDForSingleRouteClipboardData(t *testing.T) {
+	requestPayload, err := protocol.EncodePayload(protocol.FileRequest{
+		TransferID:      "transfer-1",
+		TargetSessionID: "session-target",
+	})
+	if err != nil {
+		t.Fatalf("EncodePayload(file request) error = %v", err)
+	}
+	if got := targetSessionIDForSingleRouteClipboardData(&protocol.ClipboardData{
+		Type:    constants.TypeFileRequest,
+		Payload: requestPayload,
+	}); got != "session-target" {
+		t.Fatalf("target session id = %q, want %q", got, "session-target")
+	}
+
+	if got := targetSessionIDForSingleRouteClipboardData(&protocol.ClipboardData{
+		Type:    constants.TypeText,
+		Payload: "hello",
+	}); got != "" {
+		t.Fatalf("target session id for text = %q, want empty", got)
+	}
+}
+
 func TestDispatchClipboardBodyReturnsTransportUnavailableWhenNoPathReady(t *testing.T) {
 	err := dispatchClipboardBody(
 		"payload",
@@ -142,9 +219,13 @@ func TestApplicationBuildClipboardDataFromCaptureUsesManifestForFileStub(t *test
 		cfg:       &config.Config{Username: "desktop-a"},
 		transfers: newTransferManager(),
 	}
+	filePath := filepath.Join(t.TempDir(), "a.txt")
+	if err := os.WriteFile(filePath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
 	data, err := app.buildClipboardDataFromCapture(&clipboard.CaptureData{
 		Type:  constants.TypeFileStub,
-		Paths: []string{"/tmp/a.txt"},
+		Paths: []string{filePath},
 	})
 	if err != nil {
 		t.Fatalf("buildClipboardDataFromCapture() error = %v", err)
@@ -222,6 +303,13 @@ func TestApplicationBuildClipboardDataFromCaptureConvertsSingleImageFileStubToIm
 	if data.FileName != "capture.png" {
 		t.Fatalf("data.FileName = %q, want %q", data.FileName, "capture.png")
 	}
+	decoded, err := base64.StdEncoding.DecodeString(data.Payload)
+	if err != nil {
+		t.Fatalf("DecodeString() error = %v", err)
+	}
+	if !bytes.Equal(decoded, buf.Bytes()) {
+		t.Fatal("decoded payload does not match original file bytes")
+	}
 }
 
 func TestAnnotateClipboardSourceSetsSourceSessionID(t *testing.T) {
@@ -239,5 +327,73 @@ func TestAnnotateClipboardSourceSetsSourceSessionID(t *testing.T) {
 	}
 	if data.Metadata != nil {
 		t.Fatalf("Metadata = %#v, want nil", data.Metadata)
+	}
+}
+
+func TestRecordOutgoingTextHistoryUsesLocalSessionMetadata(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		cfg:       &config.Config{Username: "desktop-a"},
+		history:   history.NewManager(10),
+		transfers: newTransferManager("session-local"),
+	}
+	data := &protocol.ClipboardData{
+		Type:            constants.TypeText,
+		Payload:         "hello",
+		SourceSessionID: "session-local",
+	}
+
+	app.recordOutgoingClipboardHistory(data)
+
+	items := app.history.List()
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+	if items[0].Type != constants.TypeText {
+		t.Fatalf("Type = %q, want %q", items[0].Type, constants.TypeText)
+	}
+	if items[0].SourceSessionID != "session-local" {
+		t.Fatalf("SourceSessionID = %q, want %q", items[0].SourceSessionID, "session-local")
+	}
+	if items[0].SourceDevice != "desktop-a" {
+		t.Fatalf("SourceDevice = %q, want %q", items[0].SourceDevice, "desktop-a")
+	}
+}
+
+func TestSendCaptureRecordsHistoryWhenStompSendSucceeds(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		cfg:       &config.Config{Username: "desktop-a"},
+		history:   history.NewManager(10),
+		transfers: newTransferManager("session-local"),
+	}
+
+	origDispatch := appDispatchClipboardBodyDetailed
+	appDispatchClipboardBodyDetailed = func(
+		body string,
+		stompConnected func() bool,
+		stompSend func(string) error,
+		p2pSend func(string) int,
+	) (clipboardDispatchResult, error) {
+		return clipboardDispatchResult{StompSent: true}, nil
+	}
+	t.Cleanup(func() { appDispatchClipboardBodyDetailed = origDispatch })
+
+	if err := app.sendCapture(&clipboard.CaptureData{
+		Type:    constants.TypeText,
+		Payload: "hello",
+	}); err != nil {
+		t.Fatalf("sendCapture() error = %v", err)
+	}
+
+	items := app.history.List()
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+	if items[0].Payload != "hello" {
+		t.Fatalf("Payload = %q, want %q", items[0].Payload, "hello")
+	}
+	if items[0].SourceSessionID != "session-local" {
+		t.Fatalf("SourceSessionID = %q, want %q", items[0].SourceSessionID, "session-local")
 	}
 }

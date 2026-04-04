@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -54,6 +55,14 @@ var monitorCaptureCurrent = func(m *Manager) *CaptureData {
 		return nil
 	}
 	return m.CaptureCurrent()
+}
+
+var monitorSetPlatformFilePaths = setPlatformFilePaths
+
+type clipboardWriteState struct {
+	lastHash        uint64
+	suppressedEdits int
+	suppressedAt    time.Time
 }
 
 // NewManager 创建一个新的剪贴板 Manager。
@@ -274,7 +283,19 @@ func (m *Manager) seedCaptureHash(capture CaptureData) {
 // handleSystemChange 当检测到系统剪贴板变动时，按严格的物理优先级尝试读取。
 func (m *Manager) handleSystemChange() {
 	paths, _ := getPlatformFilePaths()
-	result, ok := selectClipboardContent(paths, clipboard.Read(clipboard.FmtImage), clipboard.Read(clipboard.FmtText), false)
+
+	// 优先使用平台原生方式读取图片（Windows CF_DIB、Linux wl-paste 等），
+	// 避免多次 OpenClipboard/CloseClipboard 竞争。
+	imageData := getPlatformImageData()
+	if len(imageData) == 0 {
+		imageData = clipboard.Read(clipboard.FmtImage)
+	}
+	textData := getPlatformTextData()
+	if len(textData) == 0 {
+		textData = clipboard.Read(clipboard.FmtText)
+	}
+
+	result, ok := selectClipboardContent(paths, imageData, textData, false)
 	if !ok {
 		return
 	}
@@ -389,7 +410,12 @@ func (m *Manager) Paste(payload string, payloadType string, filename string) {
 			slog.Warn("剪贴板：无法解码图像", "错误", err)
 			return
 		}
-		clipboard.Write(clipboard.FmtImage, data)
+		if err := setPlatformImage(data); err == nil {
+			m.AddExtraSuppression()
+			m.AddExtraSuppression()
+		} else {
+			clipboard.Write(clipboard.FmtImage, data)
+		}
 		slog.Debug("剪贴板：已粘贴图像", "大小", len(data))
 		if m.notifier != nil {
 			m.notifier("ClipCascade", fmt.Sprintf("收到图片剪贴板更新 (%s)", sizefmt.FormatBytes(int64(len(data)))))
@@ -458,6 +484,9 @@ func (m *Manager) StageImageFile(path string) error {
 	// Wayland 下写入图片也会触发多个 MIME-type 变更事件
 	m.AddExtraSuppression()
 	m.AddExtraSuppression()
+	if err := setPlatformImage(data); err == nil {
+		return nil
+	}
 	clipboard.Write(clipboard.FmtImage, data)
 	return nil
 }
@@ -473,6 +502,7 @@ func (m *Manager) StageFilePaths(paths []string) error {
 	// handleChange 中文件类型的 hash 基于 CaptureData.Payload，
 	// 而 Payload 由 buildFileStubPayload 生成。
 	hash := pkgcrypto.XXHash64(buildFileStubPayload(normalized))
+	previous := m.snapshotClipboardWriteState()
 	// Wayland 的 wl-copy 写入会触发多个 MIME-type 变更事件
 	// (text/uri-list, text/plain, x-special/gnome-copied-files 等)，
 	// 单次抑制不够，需要额外抑制 2 次以覆盖所有并发事件。
@@ -480,7 +510,11 @@ func (m *Manager) StageFilePaths(paths []string) error {
 	m.AddExtraSuppression()
 	m.AddExtraSuppression()
 
-	return setPlatformFilePaths(normalized)
+	if err := monitorSetPlatformFilePaths(normalized); err != nil {
+		m.restoreClipboardWriteState(previous)
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) prepareForLocalClipboardWrite(hash uint64) {
@@ -489,6 +523,30 @@ func (m *Manager) prepareForLocalClipboardWrite(hash uint64) {
 	m.suppressedEdits++
 	m.suppressedAt = time.Now()
 	m.mu.Unlock()
+}
+
+func (m *Manager) snapshotClipboardWriteState() clipboardWriteState {
+	if m == nil {
+		return clipboardWriteState{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return clipboardWriteState{
+		lastHash:        m.lastHash,
+		suppressedEdits: m.suppressedEdits,
+		suppressedAt:    m.suppressedAt,
+	}
+}
+
+func (m *Manager) restoreClipboardWriteState(state clipboardWriteState) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastHash = state.lastHash
+	m.suppressedEdits = state.suppressedEdits
+	m.suppressedAt = state.suppressedAt
 }
 
 // AddExtraSuppression 增加一次额外的剪贴板变更抑制计数。
@@ -510,6 +568,18 @@ func cloneCaptureData(capture *CaptureData) *CaptureData {
 		clone.Paths = append([]string(nil), capture.Paths...)
 	}
 	return &clone
+}
+
+func clipboardImageMimeType(data []byte) string {
+	contentType := strings.ToLower(strings.TrimSpace(http.DetectContentType(data)))
+	switch contentType {
+	case "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp":
+		return contentType
+	case "image/jpg":
+		return "image/jpeg"
+	default:
+		return "image/png"
+	}
 }
 
 func buildFileStubPayload(paths []string) string {

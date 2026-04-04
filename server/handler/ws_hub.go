@@ -27,13 +27,24 @@ type WSHub struct {
 	totalConnections  atomic.Int64 // 累计总量
 	totalInboundMsgs  atomic.Int64
 	totalOutboundMsgs atomic.Int64
+	readLimitBytes    int64
+}
+
+type wsTarget struct {
+	conn *websocket.Conn
+	mu   *sync.Mutex
 }
 
 // NewWSHub 创建一个新的 WebSocket 连接 hub。
-func NewWSHub() *WSHub {
+func NewWSHub(readLimitBytes ...int64) *WSHub {
+	limit := defaultWebSocketReadLimitBytes
+	if len(readLimitBytes) > 0 {
+		limit = normalizeWebSocketReadLimitBytes(readLimitBytes[0])
+	}
 	return &WSHub{
-		connections: make(map[string]map[*websocket.Conn]bool),
-		writeLocks:  make(map[*websocket.Conn]*sync.Mutex),
+		connections:    make(map[string]map[*websocket.Conn]bool),
+		writeLocks:     make(map[*websocket.Conn]*sync.Mutex),
+		readLimitBytes: limit,
 	}
 }
 
@@ -66,30 +77,30 @@ func (h *WSHub) Unregister(username string, conn *websocket.Conn) {
 	slog.Info("WS：客户端已断开", "用户名", username, "IP", conn.RemoteAddr().String())
 }
 
-// Broadcast 向给定 user 的所有连接发送消息，但 sender 连接除外。
-// 这实现了“同步到我的所有其他 devices”的逻辑。
-func (h *WSHub) Broadcast(username string, sender *websocket.Conn, data []byte) {
+func (h *WSHub) broadcastTargets(username string) []wsTarget {
 	h.mu.RLock()
+	defer h.mu.RUnlock()
+
 	conns, ok := h.connections[username]
 	if !ok {
-		h.mu.RUnlock()
-		return
+		return nil
 	}
-	type target struct {
-		conn *websocket.Conn
-		mu   *sync.Mutex
-	}
-	targets := make([]target, 0, len(conns))
+
+	targets := make([]wsTarget, 0, len(conns))
 	for conn := range conns {
-		if conn == sender {
-			continue // 不要回显给 sender
-		}
-		targets = append(targets, target{
+		targets = append(targets, wsTarget{
 			conn: conn,
 			mu:   h.writeLocks[conn],
 		})
 	}
-	h.mu.RUnlock()
+	return targets
+}
+
+// Broadcast 向给定 user 的所有连接发送消息，包括 sender 自身。
+// 自发自收是否改写本机系统剪贴板，由客户端按 SourceSessionID 判定。
+func (h *WSHub) Broadcast(username string, sender *websocket.Conn, data []byte) {
+	_ = sender
+	targets := h.broadcastTargets(username)
 
 	for _, t := range targets {
 		h.totalOutboundMsgs.Add(1)
@@ -122,6 +133,7 @@ func (h *WSHub) HandleWebSocket(c *websocket.Conn) {
 	h.Register(username, c)
 	defer h.Unregister(username, c)
 	defer c.Close()
+	applyWebSocketReadLimit(c, h.readLimitBytes)
 
 	subscriptionID := ""
 

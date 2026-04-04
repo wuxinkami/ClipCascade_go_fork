@@ -4,13 +4,12 @@ import (
 	"sync"
 
 	"github.com/clipcascade/desktop/history"
-	"github.com/clipcascade/pkg/constants"
 )
 
 type sharedClipboardState struct {
 	mu             sync.RWMutex
 	id             string
-	lastFileStubID string // 单独追踪最近的 file_stub，防止 text/image 覆盖后丢失
+	lastFileStubID string // 单独追踪最近的 file_stub/图片历史项，避免图片或文件回放目标被其它内容挤掉
 }
 
 func (a *Application) setSharedClipboardHistoryItem(id string) {
@@ -20,6 +19,11 @@ func (a *Application) setSharedClipboardHistoryItem(id string) {
 	a.sharedClipboard.mu.Lock()
 	a.sharedClipboard.id = id
 	a.sharedClipboard.mu.Unlock()
+	if a.history != nil {
+		// 控制面板的 active 视图基于 history.GetActive() 渲染。
+		// 当共享剪贴板最新项切换时，同步刷新 active，避免网页仍停留在旧的手动 active 项。
+		a.history.SetActive(id)
+	}
 }
 
 func (a *Application) setLastFileStubHistoryItem(id string) {
@@ -63,15 +67,6 @@ func (a *Application) resolveSharedReplayItem() *history.HistoryItem {
 	}
 	// 第一优先级：共享剪贴板指向的项（可能是 text/image/file_stub）
 	if item := a.sharedClipboardHistoryItem(); canReplayHistoryItem(item) {
-		// 如果共享剪贴板就是 file_stub，直接返回
-		if item.Type == constants.TypeFileStub {
-			return item
-		}
-		// 如果共享剪贴板是 text/image，但有进行中/待处理的 file_stub，优先返回 file_stub
-		// 这防止了中间到达的 text 把 file_stub 从热键可达范围挤掉
-		if fileItem := a.lastFileStubHistoryItem(); canReplayHistoryItem(fileItem) {
-			return fileItem
-		}
 		return item
 	}
 	// 第二优先级：最近的 file_stub
@@ -82,8 +77,8 @@ func (a *Application) resolveSharedReplayItem() *history.HistoryItem {
 }
 
 // isLocalOriginItem 判断 history item 是否来自本机发送端（自发自收检测）。
-// 文件 stub：检查 SourceSessionID 是否等于本机 session ID。
-// 图片：检查 SourceDevice 是否为 "local" 或等于本机 username。
+// 仅通过 SourceSessionID 精确匹配本机 sessionID 来判断。
+// 注意：不能用 SourceDevice（= username）判断，因为多台设备可能共用同一个账号。
 func (a *Application) isLocalOriginItem(item *history.HistoryItem) bool {
 	if a == nil || item == nil {
 		return false
@@ -93,13 +88,10 @@ func (a *Application) isLocalOriginItem(item *history.HistoryItem) bool {
 	if item.SourceSessionID != "" && sessionID != "" && item.SourceSessionID == sessionID {
 		return true
 	}
-	// 图片/其他：通过 SourceDevice 匹配
+	// 图片/文本等：仅在明确标记为 "local" 时才视为本机来源
+	// （local 标记仅在本机 clipboard 监控直接捕获时设置，不会出现在远端广播中）
 	if item.SourceDevice == "local" {
-		return true
-	}
-	if a.cfg != nil && a.cfg.Username != "" && item.SourceDevice == a.cfg.Username {
 		return true
 	}
 	return false
 }
-

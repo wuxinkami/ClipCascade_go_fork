@@ -98,6 +98,55 @@ func TestCreateFileStubManifestSingleFileUsesRawArchiveFormat(t *testing.T) {
 	}
 }
 
+func TestRegisterOutgoingReusesTransferForUnchangedSourceContent(t *testing.T) {
+	baseDir := t.TempDir()
+	filePath := filepath.Join(baseDir, "report.txt")
+	if err := os.WriteFile(filePath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	manager := newTransferManager("session-local")
+	first, err := manager.RegisterOutgoing([]string{filePath}, "desktop-a")
+	if err != nil {
+		t.Fatalf("first RegisterOutgoing() error = %v", err)
+	}
+	second, err := manager.RegisterOutgoing([]string{filePath}, "desktop-a")
+	if err != nil {
+		t.Fatalf("second RegisterOutgoing() error = %v", err)
+	}
+
+	if first.Manifest.TransferID != second.Manifest.TransferID {
+		t.Fatalf("TransferID changed for unchanged content: %q vs %q", first.Manifest.TransferID, second.Manifest.TransferID)
+	}
+}
+
+func TestRegisterOutgoingCreatesNewTransferWhenContentChangesButSizeMatches(t *testing.T) {
+	baseDir := t.TempDir()
+	filePath := filepath.Join(baseDir, "report.txt")
+	if err := os.WriteFile(filePath, []byte("abcde"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	manager := newTransferManager("session-local")
+	first, err := manager.RegisterOutgoing([]string{filePath}, "desktop-a")
+	if err != nil {
+		t.Fatalf("first RegisterOutgoing() error = %v", err)
+	}
+
+	if err := os.WriteFile(filePath, []byte("vwxyz"), 0o644); err != nil {
+		t.Fatalf("overwrite WriteFile() error = %v", err)
+	}
+
+	second, err := manager.RegisterOutgoing([]string{filePath}, "desktop-a")
+	if err != nil {
+		t.Fatalf("second RegisterOutgoing() error = %v", err)
+	}
+
+	if first.Manifest.TransferID == second.Manifest.TransferID {
+		t.Fatalf("TransferID reused after content change with same size: %q", first.Manifest.TransferID)
+	}
+}
+
 func TestHandleFileTransferMessageIgnoresChunkForOtherSession(t *testing.T) {
 	app := &Application{sessionID: "session-local", transfers: newTransferManager("session-local")}
 	data, err := protocol.NewClipboardDataWithPayload(constants.TypeFileChunk, protocol.FileChunk{
@@ -350,7 +399,7 @@ func TestHandleFileChunkAndCompleteRawSingleFileWritesReservedPath(t *testing.T)
 		EntryCount:      1,
 		TopLevelNames:   []string{"hello.txt"},
 	}
-	reservedDir := t.TempDir()
+	reservedDir := testReplayPath(t)
 	reservedPath := filepath.Join(reservedDir, "hello.txt")
 	item := &history.HistoryItem{
 		ID:            "history-raw",
@@ -410,6 +459,328 @@ func TestHandleFileChunkAndCompleteRawSingleFileWritesReservedPath(t *testing.T)
 	}
 }
 
+func TestHandleFileChunkAndCompleteRawSingleFileReusesExistingIdenticalTarget(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		history:   history.NewManager(10),
+		transfers: newTransferManager("session-local"),
+	}
+	now := time.Date(2026, 3, 15, 8, 0, 0, 0, time.UTC)
+	manifest := protocol.FileStubManifest{
+		ProtocolVersion: 1,
+		EntryID:         "entry-raw-reuse",
+		TransferID:      "transfer-raw-reuse",
+		SourceSessionID: "session-remote",
+		SourceDevice:    "desktop-remote",
+		Kind:            protocol.FileKindSingleFile,
+		ArchiveFormat:   "raw",
+		DisplayName:     "hello.txt",
+		EntryCount:      1,
+		TopLevelNames:   []string{"hello.txt"},
+	}
+	reservedDir := testReplayPath(t)
+	reservedPath := filepath.Join(reservedDir, "hello.txt")
+	raw := []byte("hello raw world")
+	if err := os.WriteFile(reservedPath, raw, 0o644); err != nil {
+		t.Fatalf("WriteFile(existing) error = %v", err)
+	}
+	oldTime := now.Add(-time.Hour)
+	if err := os.Chtimes(reservedPath, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+	item := &history.HistoryItem{
+		ID:            "history-raw-reuse",
+		Type:          constants.TypeFileStub,
+		State:         history.StateOffered,
+		DisplayName:   manifest.DisplayName,
+		Payload:       mustManifestPayload(t, manifest),
+		TransferID:    manifest.TransferID,
+		SourceDevice:  manifest.SourceDevice,
+		LastChunkIdx:  -1,
+		ReservedPaths: []string{reservedPath},
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	app.history.AddItem(item)
+	app.transfers.RegisterIncoming(manifest, item.ID, item.LastChunkIdx)
+
+	rawSum := sha256.Sum256(raw)
+	if err := app.handleFileChunk(&protocol.FileChunk{
+		TransferID:      manifest.TransferID,
+		TargetSessionID: app.appSessionID(),
+		ArchiveMode:     string(transferArchiveModeMemory),
+		ChunkIndex:      0,
+		TotalChunks:     1,
+		ChunkData:       base64.StdEncoding.EncodeToString(raw),
+		ChunkSHA256:     fmt.Sprintf("%x", rawSum[:]),
+	}); err != nil {
+		t.Fatalf("handleFileChunk() error = %v", err)
+	}
+	if err := app.handleFileComplete(&protocol.FileComplete{
+		TransferID:       manifest.TransferID,
+		TargetSessionID:  app.appSessionID(),
+		ArchiveMode:      string(transferArchiveModeMemory),
+		ArchiveSHA256:    fmt.Sprintf("%x", rawSum[:]),
+		ActualTotalBytes: int64(len(raw)),
+	}); err != nil {
+		t.Fatalf("handleFileComplete() error = %v", err)
+	}
+
+	info, err := os.Stat(reservedPath)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if !info.ModTime().Equal(oldTime) {
+		t.Fatalf("ModTime = %v, want unchanged %v", info.ModTime(), oldTime)
+	}
+}
+
+func TestHandleFileChunkAndCompleteRawSingleFileOverwritesChangedTarget(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		history:   history.NewManager(10),
+		transfers: newTransferManager("session-local"),
+	}
+	now := time.Date(2026, 3, 15, 8, 0, 0, 0, time.UTC)
+	manifest := protocol.FileStubManifest{
+		ProtocolVersion: 1,
+		EntryID:         "entry-raw-overwrite",
+		TransferID:      "transfer-raw-overwrite",
+		SourceSessionID: "session-remote",
+		SourceDevice:    "desktop-remote",
+		Kind:            protocol.FileKindSingleFile,
+		ArchiveFormat:   "raw",
+		DisplayName:     "hello.txt",
+		EntryCount:      1,
+		TopLevelNames:   []string{"hello.txt"},
+	}
+	reservedDir := testReplayPath(t)
+	reservedPath := filepath.Join(reservedDir, "hello.txt")
+	if err := os.WriteFile(reservedPath, []byte("old content"), 0o644); err != nil {
+		t.Fatalf("WriteFile(existing) error = %v", err)
+	}
+	item := &history.HistoryItem{
+		ID:            "history-raw-overwrite",
+		Type:          constants.TypeFileStub,
+		State:         history.StateOffered,
+		DisplayName:   manifest.DisplayName,
+		Payload:       mustManifestPayload(t, manifest),
+		TransferID:    manifest.TransferID,
+		SourceDevice:  manifest.SourceDevice,
+		LastChunkIdx:  -1,
+		ReservedPaths: []string{reservedPath},
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	app.history.AddItem(item)
+	app.transfers.RegisterIncoming(manifest, item.ID, item.LastChunkIdx)
+
+	raw := []byte("new content")
+	rawSum := sha256.Sum256(raw)
+	if err := app.handleFileChunk(&protocol.FileChunk{
+		TransferID:      manifest.TransferID,
+		TargetSessionID: app.appSessionID(),
+		ArchiveMode:     string(transferArchiveModeMemory),
+		ChunkIndex:      0,
+		TotalChunks:     1,
+		ChunkData:       base64.StdEncoding.EncodeToString(raw),
+		ChunkSHA256:     fmt.Sprintf("%x", rawSum[:]),
+	}); err != nil {
+		t.Fatalf("handleFileChunk() error = %v", err)
+	}
+	if err := app.handleFileComplete(&protocol.FileComplete{
+		TransferID:       manifest.TransferID,
+		TargetSessionID:  app.appSessionID(),
+		ArchiveMode:      string(transferArchiveModeMemory),
+		ArchiveSHA256:    fmt.Sprintf("%x", rawSum[:]),
+		ActualTotalBytes: int64(len(raw)),
+	}); err != nil {
+		t.Fatalf("handleFileComplete() error = %v", err)
+	}
+
+	content, err := os.ReadFile(reservedPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(content) != string(raw) {
+		t.Fatalf("content = %q, want %q", string(content), string(raw))
+	}
+}
+
+func TestHandleFileChunkIgnoresDuplicateChunk(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		history:   history.NewManager(10),
+		transfers: newTransferManager("session-local"),
+	}
+	manifest := protocol.FileStubManifest{
+		ProtocolVersion: 1,
+		EntryID:         "entry-dup-chunk",
+		TransferID:      "transfer-dup-chunk",
+		SourceSessionID: "session-remote",
+		SourceDevice:    "desktop-remote",
+		Kind:            protocol.FileKindSingleFile,
+		ArchiveFormat:   "raw",
+		DisplayName:     "dup.txt",
+		EntryCount:      1,
+		TopLevelNames:   []string{"dup.txt"},
+	}
+	item := &history.HistoryItem{
+		ID:           "history-dup-chunk",
+		Type:         constants.TypeFileStub,
+		State:        history.StateOffered,
+		DisplayName:  manifest.DisplayName,
+		Payload:      mustManifestPayload(t, manifest),
+		TransferID:   manifest.TransferID,
+		SourceDevice: manifest.SourceDevice,
+		LastChunkIdx: -1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	app.history.AddItem(item)
+	app.transfers.RegisterIncoming(manifest, item.ID, item.LastChunkIdx)
+
+	raw := []byte("dup")
+	chunk := &protocol.FileChunk{
+		TransferID:      manifest.TransferID,
+		TargetSessionID: app.appSessionID(),
+		ArchiveMode:     string(transferArchiveModeMemory),
+		ChunkIndex:      0,
+		TotalChunks:     1,
+		ChunkData:       base64.StdEncoding.EncodeToString(raw),
+		ChunkSHA256:     fmt.Sprintf("%x", sha256.Sum256(raw)),
+	}
+	if err := app.handleFileChunk(chunk); err != nil {
+		t.Fatalf("first handleFileChunk() error = %v", err)
+	}
+	if err := app.handleFileChunk(chunk); err != nil {
+		t.Fatalf("second handleFileChunk() error = %v", err)
+	}
+	incoming := app.transfers.GetIncoming(manifest.TransferID)
+	if incoming == nil {
+		t.Fatal("incoming transfer not found")
+	}
+	if incoming.LastChunkIdx != 0 {
+		t.Fatalf("LastChunkIdx = %d, want 0", incoming.LastChunkIdx)
+	}
+	if string(incoming.ArchiveBytes) != string(raw) {
+		t.Fatalf("ArchiveBytes = %q, want %q", string(incoming.ArchiveBytes), string(raw))
+	}
+}
+
+func TestHandleFileCompleteIgnoresDuplicateAfterSuccess(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		history:   history.NewManager(10),
+		transfers: newTransferManager("session-local"),
+	}
+	now := time.Date(2026, 3, 15, 8, 0, 0, 123456789, time.UTC)
+	manifest := protocol.FileStubManifest{
+		ProtocolVersion: 1,
+		EntryID:         "entry-dup-complete",
+		TransferID:      "transfer-dup-complete",
+		SourceSessionID: "session-remote",
+		SourceDevice:    "desktop-remote",
+		Kind:            protocol.FileKindSingleFile,
+		ArchiveFormat:   "raw",
+		DisplayName:     "dup-complete.txt",
+		EntryCount:      1,
+		TopLevelNames:   []string{"dup-complete.txt"},
+	}
+	reservedPath := testReplayPath(t, "dup-complete.txt")
+	item := &history.HistoryItem{
+		ID:            "history-dup-complete",
+		Type:          constants.TypeFileStub,
+		State:         history.StateOffered,
+		DisplayName:   manifest.DisplayName,
+		Payload:       mustManifestPayload(t, manifest),
+		TransferID:    manifest.TransferID,
+		SourceDevice:  manifest.SourceDevice,
+		LastChunkIdx:  -1,
+		ReservedPaths: []string{reservedPath},
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	app.history.AddItem(item)
+	app.transfers.RegisterIncoming(manifest, item.ID, item.LastChunkIdx)
+
+	raw := []byte("dup complete")
+	rawSum := sha256.Sum256(raw)
+	chunk := &protocol.FileChunk{
+		TransferID:      manifest.TransferID,
+		TargetSessionID: app.appSessionID(),
+		ArchiveMode:     string(transferArchiveModeMemory),
+		ChunkIndex:      0,
+		TotalChunks:     1,
+		ChunkData:       base64.StdEncoding.EncodeToString(raw),
+		ChunkSHA256:     fmt.Sprintf("%x", rawSum),
+	}
+	if err := app.handleFileChunk(chunk); err != nil {
+		t.Fatalf("handleFileChunk() error = %v", err)
+	}
+	complete := &protocol.FileComplete{
+		TransferID:       manifest.TransferID,
+		TargetSessionID:  app.appSessionID(),
+		ArchiveMode:      string(transferArchiveModeMemory),
+		ArchiveSHA256:    fmt.Sprintf("%x", rawSum),
+		ActualTotalBytes: int64(len(raw)),
+	}
+	if err := app.handleFileComplete(complete); err != nil {
+		t.Fatalf("first handleFileComplete() error = %v", err)
+	}
+	if err := app.handleFileComplete(complete); err != nil {
+		t.Fatalf("second handleFileComplete() error = %v", err)
+	}
+	stored := app.history.GetByTransferID(manifest.TransferID)
+	if stored == nil {
+		t.Fatal("history item not found")
+	}
+	if stored.State != history.StateReadyToPaste {
+		t.Fatalf("state = %q, want %q", stored.State, history.StateReadyToPaste)
+	}
+}
+
+func TestHandleFileCompleteIgnoresDuplicateWhileCompletionInProgress(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		transfers: newTransferManager("session-local"),
+	}
+	manifest := protocol.FileStubManifest{
+		ProtocolVersion: 1,
+		EntryID:         "entry-dup-inflight-complete",
+		TransferID:      "transfer-dup-inflight-complete",
+		SourceSessionID: "session-remote",
+		SourceDevice:    "desktop-remote",
+		Kind:            protocol.FileKindMultiFile,
+		ArchiveFormat:   "zip",
+		DisplayName:     "a.txt and 1 more",
+		EntryCount:      2,
+		TopLevelNames:   []string{"a.txt", "b.txt"},
+	}
+	app.transfers.RegisterIncoming(manifest, "history-dup-inflight-complete", -1)
+	_, err := app.transfers.mutateIncoming(manifest.TransferID, func(incoming *incomingTransfer) error {
+		incoming.ArchiveMode = transferArchiveModeDisk
+		incoming.StorageMode = transferArchiveModeDisk
+		incoming.ArchivePath = filepath.Join(t.TempDir(), "missing-payload.zip")
+		incoming.Completing = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("mutateIncoming() error = %v", err)
+	}
+
+	complete := &protocol.FileComplete{
+		TransferID:       manifest.TransferID,
+		TargetSessionID:  app.appSessionID(),
+		ArchiveMode:      string(transferArchiveModeDisk),
+		ArchiveSHA256:    "irrelevant",
+		ActualTotalBytes: 123,
+	}
+	if err := app.handleFileComplete(complete); err != nil {
+		t.Fatalf("handleFileComplete() error = %v, want nil for duplicate in-flight complete", err)
+	}
+}
+
 func TestHandleFileChunkAndCompleteMultiFileExtractsIntoReservedDirectory(t *testing.T) {
 	app := &Application{
 		sessionID: "session-local",
@@ -429,7 +800,7 @@ func TestHandleFileChunkAndCompleteMultiFileExtractsIntoReservedDirectory(t *tes
 		EntryCount:      2,
 		TopLevelNames:   []string{"a.txt", "b.txt"},
 	}
-	reservedDir := filepath.Join(t.TempDir(), "20260315230000")
+	reservedDir := testReplayPath(t, "20260315230000")
 	item := &history.HistoryItem{
 		ID:            "history-bundle",
 		Type:          constants.TypeFileStub,
@@ -512,13 +883,17 @@ func TestHandleFileChunkAndCompleteSingleFolderPreservesOriginalFolderName(t *te
 		EntryCount:      1,
 		TopLevelNames:   []string{"photos"},
 	}
+	reservedDir := testReplayPath(t, "photos")
 	item := &history.HistoryItem{
-		ID:           "history-folder",
-		Type:         constants.TypeFileStub,
-		State:        history.StateOffered,
-		DisplayName:  manifest.DisplayName,
-		Payload:      mustManifestPayload(t, manifest),
-		TransferID:   manifest.TransferID,
+		ID:          "history-folder",
+		Type:        constants.TypeFileStub,
+		State:       history.StateOffered,
+		DisplayName: manifest.DisplayName,
+		Payload:     mustManifestPayload(t, manifest),
+		TransferID:  manifest.TransferID,
+		ReservedPaths: []string{
+			reservedDir,
+		},
 		SourceDevice: manifest.SourceDevice,
 		LastChunkIdx: -1,
 		CreatedAt:    now,
@@ -589,7 +964,7 @@ func TestHandleFileCompleteClearsPendingReplayModeAndWaitsForExplicitReplay(t *t
 		EntryCount:      1,
 		TopLevelNames:   []string{"hello.txt"},
 	}
-	reservedPath := filepath.Join(t.TempDir(), "hello.txt")
+	reservedPath := testReplayPath(t, "hello.txt")
 	item := &history.HistoryItem{
 		ID:                "history-pending-real",
 		Type:              constants.TypeFileStub,
@@ -729,9 +1104,14 @@ func TestSanitizeFileName(t *testing.T) {
 			want: "_unnamed",
 		},
 		{
-			name: "path separators unchanged",
+			name: "path separators replaced",
 			in:   "dir/file.txt",
-			want: "dir/file.txt",
+			want: "dir_file.txt",
+		},
+		{
+			name: "windows separators replaced",
+			in:   `dir\file.txt`,
+			want: "dir_file.txt",
 		},
 	}
 
@@ -742,6 +1122,13 @@ func TestSanitizeFileName(t *testing.T) {
 				t.Fatalf("sanitizeFileName(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestNormalizeReplayTargetPathRejectsOutsideTempRoot(t *testing.T) {
+	outside := filepath.Join(filepath.Dir(replayTempRootDir()), "evil.txt")
+	if _, err := normalizeReplayTargetPath(outside); err == nil {
+		t.Fatalf("normalizeReplayTargetPath(%q) error = nil, want rejection", outside)
 	}
 }
 
@@ -871,6 +1258,203 @@ func TestHandleFileReleaseClearsOutgoingArchiveState(t *testing.T) {
 	}
 	if _, err := os.Stat(archiveDir); !os.IsNotExist(err) {
 		t.Fatalf("archiveDir should be removed, stat err = %v", err)
+	}
+}
+
+func TestHandleFileReleaseKeepsArchiveWhileAnotherTargetIsStillSending(t *testing.T) {
+	app := &Application{transfers: newTransferManager("session-local")}
+	baseDir := t.TempDir()
+	transfer, err := app.transfers.RegisterOutgoing([]string{baseDir}, "desktop-local")
+	if err != nil {
+		t.Fatalf("RegisterOutgoing() error = %v", err)
+	}
+
+	archiveDir := filepath.Join(t.TempDir(), "outgoing-busy")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	archivePath := filepath.Join(archiveDir, fileTransferArchive)
+	if err := os.WriteFile(archivePath, []byte("archive"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	app.transfers.mu.Lock()
+	stored := app.transfers.getOutgoingMutable(transfer.Manifest.TransferID)
+	stored.ArchiveMode = transferArchiveModeMemory
+	stored.ArchiveBytes = []byte("archive-bytes")
+	stored.BaseDir = archiveDir
+	stored.ArchivePath = archivePath
+	stored.sendingTargets = map[string]struct{}{
+		"session-a": {},
+	}
+	app.transfers.mu.Unlock()
+
+	if err := app.handleFileRelease(&protocol.FileRelease{TransferID: transfer.Manifest.TransferID, TargetSessionID: "session-b", ReleaseReason: "received_ok"}); err != nil {
+		t.Fatalf("handleFileRelease() error = %v", err)
+	}
+
+	released := app.transfers.GetOutgoing(transfer.Manifest.TransferID)
+	if released == nil {
+		t.Fatal("outgoing transfer missing after release")
+	}
+	if len(released.ArchiveBytes) == 0 {
+		t.Fatal("ArchiveBytes should be preserved while another target is still sending")
+	}
+	if _, err := os.Stat(archiveDir); err != nil {
+		t.Fatalf("archiveDir should still exist: %v", err)
+	}
+}
+
+func TestRequestFileTransferIsIdempotentWhileRequestActive(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		history:   history.NewManager(10),
+		transfers: newTransferManager("session-local"),
+	}
+	manifest := protocol.FileStubManifest{
+		ProtocolVersion: 1,
+		EntryID:         "entry-request",
+		TransferID:      "transfer-request",
+		SourceSessionID: "session-remote",
+		DisplayName:     "report.pdf",
+		EntryCount:      1,
+	}
+	item := &history.HistoryItem{
+		ID:           "history-request",
+		Type:         constants.TypeFileStub,
+		State:        history.StateOffered,
+		DisplayName:  manifest.DisplayName,
+		Payload:      mustManifestPayload(t, manifest),
+		TransferID:   manifest.TransferID,
+		LastChunkIdx: -1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	app.history.AddItem(item)
+
+	sendCalls := 0
+	origDispatch := appDispatchClipboardBodySingle
+	appDispatchClipboardBodySingle = func(
+		body string,
+		p2pSend func(string) int,
+		stompConnected func() bool,
+		stompSend func(string) error,
+	) (clipboardDispatchResult, error) {
+		sendCalls++
+		return clipboardDispatchResult{P2PSent: true}, nil
+	}
+	t.Cleanup(func() { appDispatchClipboardBodySingle = origDispatch })
+
+	if err := app.requestFileTransfer(item); err != nil {
+		t.Fatalf("first requestFileTransfer() error = %v", err)
+	}
+	if err := app.requestFileTransfer(item); err != nil {
+		t.Fatalf("second requestFileTransfer() error = %v", err)
+	}
+	if sendCalls != 1 {
+		t.Fatalf("sendCalls = %d, want 1", sendCalls)
+	}
+
+	incoming := app.transfers.GetIncoming(manifest.TransferID)
+	if incoming == nil {
+		t.Fatal("incoming transfer not found")
+	}
+	if !incoming.RequestActive {
+		t.Fatal("RequestActive should be true while transfer is in flight")
+	}
+}
+
+func TestHandleFileChunkAcceptsRestartFromChunkZeroAfterResumeRequest(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		history:   history.NewManager(10),
+		transfers: newTransferManager("session-local"),
+	}
+	manifest := protocol.FileStubManifest{
+		ProtocolVersion: 1,
+		EntryID:         "entry-restart",
+		TransferID:      "transfer-restart",
+		SourceSessionID: "session-remote",
+		SourceDevice:    "desktop-remote",
+		Kind:            protocol.FileKindSingleFile,
+		ArchiveFormat:   "raw",
+		DisplayName:     "restart.txt",
+		EntryCount:      1,
+		TopLevelNames:   []string{"restart.txt"},
+	}
+	item := &history.HistoryItem{
+		ID:           "history-restart",
+		Type:         constants.TypeFileStub,
+		State:        history.StateFailed,
+		DisplayName:  manifest.DisplayName,
+		Payload:      mustManifestPayload(t, manifest),
+		TransferID:   manifest.TransferID,
+		SourceDevice: manifest.SourceDevice,
+		LastChunkIdx: 1,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	app.history.AddItem(item)
+	app.transfers.RegisterIncoming(manifest, item.ID, item.LastChunkIdx)
+	_, err := app.transfers.mutateIncoming(manifest.TransferID, func(incoming *incomingTransfer) error {
+		incoming.ArchiveMode = transferArchiveModeMemory
+		incoming.StorageMode = transferArchiveModeMemory
+		incoming.ArchiveBytes = []byte("stale-partial")
+		incoming.LastChunkIdx = 1
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("mutateIncoming() error = %v", err)
+	}
+
+	origDispatch := appDispatchClipboardBodySingle
+	appDispatchClipboardBodySingle = func(
+		body string,
+		p2pSend func(string) int,
+		stompConnected func() bool,
+		stompSend func(string) error,
+	) (clipboardDispatchResult, error) {
+		return clipboardDispatchResult{P2PSent: true}, nil
+	}
+	t.Cleanup(func() { appDispatchClipboardBodySingle = origDispatch })
+
+	if err := app.requestFileTransfer(item); err != nil {
+		t.Fatalf("requestFileTransfer() error = %v", err)
+	}
+
+	incoming := app.transfers.GetIncoming(manifest.TransferID)
+	if incoming == nil {
+		t.Fatal("incoming transfer not found")
+	}
+	if incoming.RequestedResumeFrom != 2 {
+		t.Fatalf("RequestedResumeFrom = %d, want 2", incoming.RequestedResumeFrom)
+	}
+
+	raw := []byte("fresh")
+	if err := app.handleFileChunk(&protocol.FileChunk{
+		TransferID:      manifest.TransferID,
+		TargetSessionID: app.appSessionID(),
+		ArchiveMode:     string(transferArchiveModeMemory),
+		ChunkIndex:      0,
+		TotalChunks:     3,
+		ChunkData:       base64.StdEncoding.EncodeToString(raw),
+		ChunkSHA256:     fmt.Sprintf("%x", sha256.Sum256(raw)),
+	}); err != nil {
+		t.Fatalf("handleFileChunk() error = %v", err)
+	}
+
+	incoming = app.transfers.GetIncoming(manifest.TransferID)
+	if incoming == nil {
+		t.Fatal("incoming transfer not found after restart chunk")
+	}
+	if incoming.LastChunkIdx != 0 {
+		t.Fatalf("LastChunkIdx = %d, want 0", incoming.LastChunkIdx)
+	}
+	if string(incoming.ArchiveBytes) != string(raw) {
+		t.Fatalf("ArchiveBytes = %q, want %q", string(incoming.ArchiveBytes), string(raw))
+	}
+	if incoming.RequestedResumeFrom != 0 {
+		t.Fatalf("RequestedResumeFrom = %d, want 0 after accepting restart chunk", incoming.RequestedResumeFrom)
 	}
 }
 

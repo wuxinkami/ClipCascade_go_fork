@@ -82,6 +82,16 @@ func (p *P2PClient) Connect() error {
 // Send 通过 DataChannel 向所有已连接的 peers 广播数据。
 // 返回成功发送到的 peer 数量。
 func (p *P2PClient) Send(data string) int {
+	return p.send(data, "")
+}
+
+// SendTo 通过 DataChannel 向指定的 peer 发送数据。
+// 当目标 peer 不在线或 DataChannel 未就绪时返回 0。
+func (p *P2PClient) SendTo(targetSessionID, data string) int {
+	return p.send(data, targetSessionID)
+}
+
+func (p *P2PClient) send(data string, targetSessionID string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -121,6 +131,9 @@ func (p *P2PClient) Send(data string) int {
 		encoded, _ := json.Marshal(frag)
 
 		for sid, dc := range p.dataChans {
+			if targetSessionID != "" && sid != targetSessionID {
+				continue
+			}
 			if dc.ReadyState() == webrtc.DataChannelStateOpen {
 				if err := dc.SendText(string(encoded)); err != nil {
 					slog.Warn("p2p: send error", "peer", sid, "error", err)

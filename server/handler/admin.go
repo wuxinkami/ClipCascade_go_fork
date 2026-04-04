@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"log/slog"
 	"time"
 
@@ -8,10 +9,21 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
-	"github.com/clipcascade/server/config"
 	"github.com/clipcascade/pkg/constants"
+	"github.com/clipcascade/server/config"
 	"github.com/clipcascade/server/model"
 )
+
+func updateSingleUserField(db *gorm.DB, id int, column string, value any) error {
+	tx := db.Model(&model.User{}).Where("id = ?", id).Update(column, value)
+	if tx.Error != nil {
+		return tx.Error
+	}
+	if tx.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
 
 // AdminHandler 处理仅限 admin 的 API 端点。
 type AdminHandler struct {
@@ -101,8 +113,11 @@ func (h *AdminHandler) ResetPassword(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "hash error"})
 	}
 
-	if err := h.DB.Model(&model.User{}).Where("id = ?", id).Update("password", string(hashed)).Error; err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+	if err := updateSingleUserField(h.DB, id, "password", string(hashed)); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "update failed"})
 	}
 
 	slog.Info("管理员：密码已重置", "用户ID", id, "操作人", c.Locals("username"))
@@ -123,7 +138,12 @@ func (h *AdminHandler) SetRole(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "role must be USER or ADMIN"})
 	}
 
-	h.DB.Model(&model.User{}).Where("id = ?", id).Update("role", body.Role)
+	if err := updateSingleUserField(h.DB, id, "role", body.Role); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "update failed"})
+	}
 	slog.Info("管理员：角色已更改", "用户ID", id, "新角色", body.Role, "操作人", c.Locals("username"))
 	return c.JSON(fiber.Map{"message": "role updated"})
 }
@@ -166,7 +186,12 @@ func (h *AdminHandler) ToggleUserStatus(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
 	}
 
-	h.DB.Model(&model.User{}).Where("id = ?", id).Update("enabled", body.Enabled)
+	if err := updateSingleUserField(h.DB, id, "enabled", body.Enabled); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "update failed"})
+	}
 	status := "disabled"
 	if body.Enabled {
 		status = "enabled"
@@ -230,11 +255,20 @@ func (h *AdminHandler) UpdateUsername(c *fiber.Ctx) error {
 
 	// 检查唯一性
 	var existing model.User
-	if h.DB.Where("username = ?", body.Username).First(&existing).Error == nil {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "username already taken"})
+	if err := h.DB.Where("username = ?", body.Username).First(&existing).Error; err == nil {
+		if int(existing.ID) != id {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "username already taken"})
+		}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "query failed"})
 	}
 
-	h.DB.Model(&model.User{}).Where("id = ?", id).Update("username", body.Username)
+	if err := updateSingleUserField(h.DB, id, "username", body.Username); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "update failed"})
+	}
 	slog.Info("管理员：用户名已更改", "用户ID", id, "新用户名", body.Username, "操作人", c.Locals("username"))
 	return c.JSON(fiber.Map{"message": "username updated"})
 }
@@ -269,7 +303,13 @@ func UpdatePasswordSelf(db *gorm.DB) fiber.Handler {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "hash error"})
 		}
 
-		db.Model(&model.User{}).Where("id = ?", userID).Update("password", string(hashed))
+		tx := db.Model(&model.User{}).Where("id = ?", userID).Update("password", string(hashed))
+		if tx.Error != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "update failed"})
+		}
+		if tx.RowsAffected == 0 {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+		}
 		slog.Info("用户：密码已更新", "用户ID", userID)
 		return c.JSON(fiber.Map{"message": "password updated"})
 	}

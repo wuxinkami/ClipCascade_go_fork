@@ -118,6 +118,7 @@ func NewManager(maxItems int) *Manager {
 }
 
 // AddItem 添加一条历史项，并在超出上限时淘汰最旧的 consumed/failed 项。
+// 最新加入的历史项会自动成为当前活动项，保证控制中心和共享热键默认跟随最新内容。
 func (m *Manager) AddItem(item *HistoryItem) {
 	if item == nil {
 		return
@@ -152,6 +153,7 @@ func (m *Manager) AddItem(item *HistoryItem) {
 	m.items = append(m.items, nil)
 	copy(m.items[insertIdx+1:], m.items[insertIdx:])
 	m.items[insertIdx] = newItem
+	m.activeID = newItem.ID
 
 	evicted := m.evictOverflowLocked()
 	changed = true
@@ -170,7 +172,7 @@ func (m *Manager) AddItem(item *HistoryItem) {
 	}
 }
 
-// GetActive 返回当前活动项；若未显式设置，则返回最新项的副本。
+// GetActive 返回当前活动项副本。
 func (m *Manager) GetActive() *HistoryItem {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -189,6 +191,7 @@ func (m *Manager) GetActive() *HistoryItem {
 }
 
 // SetActive 将指定 ID 的历史项设为当前活动项。
+// 后续若有更新的历史项加入，活动项会再次自动跟随最新项。
 func (m *Manager) SetActive(id string) bool {
 	if id == "" {
 		return false

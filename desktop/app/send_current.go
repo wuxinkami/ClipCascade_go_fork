@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/clipcascade/desktop/clipboard"
@@ -18,7 +19,14 @@ var (
 	ErrNoCurrentClipboardData        = errors.New("no current clipboard data")
 	ErrClipboardTransportUnavailable = errors.New("clipboard transport unavailable")
 	appSendCurrentClipboard          = func(a *Application) error { return a.SendCurrentClipboard() }
+	appDispatchClipboardBodyDetailed = dispatchClipboardBodyDetailed
+	appDispatchClipboardBodySingle   = dispatchClipboardBodySingleRoute
 )
+
+type clipboardDispatchResult struct {
+	P2PSent   bool
+	StompSent bool
+}
 
 func buildClipboardDataFromCapture(capture *clipboard.CaptureData) (*protocol.ClipboardData, error) {
 	if capture == nil {
@@ -54,10 +62,10 @@ func (a *Application) sendCapture(capture *clipboard.CaptureData) error {
 		return err
 	}
 	a.annotateClipboardSource(clipData)
-	if err := a.sendClipboardData(clipData); err != nil {
+	if _, err := a.sendClipboardDataWithResult(clipData); err != nil {
 		return err
 	}
-	a.recordOutgoingLazyHistory(clipData)
+	a.recordOutgoingClipboardHistory(clipData)
 	return nil
 }
 
@@ -114,6 +122,11 @@ func (a *Application) ensureClipboardReady() error {
 }
 
 func (a *Application) sendClipboardData(clipData *protocol.ClipboardData) error {
+	_, err := a.sendClipboardDataWithResult(clipData)
+	return err
+}
+
+func (a *Application) sendClipboardDataWithResult(clipData *protocol.ClipboardData) (clipboardDispatchResult, error) {
 	attrs := []any{
 		"类型", clipData.Type,
 		"大小", sizefmt.HumanSizeFromPayload(clipData.Type, clipData.Payload),
@@ -127,22 +140,42 @@ func (a *Application) sendClipboardData(clipData *protocol.ClipboardData) error 
 
 	jsonBytes, err := clipData.Encode()
 	if err != nil {
-		return fmt.Errorf("encode clipboard data: %w", err)
+		return clipboardDispatchResult{}, fmt.Errorf("encode clipboard data: %w", err)
 	}
 
 	body := string(jsonBytes)
 	if a != nil && a.cfg != nil && a.cfg.E2EEEnabled && a.encKey != nil {
 		encrypted, err := pkgcrypto.Encrypt(a.encKey, jsonBytes)
 		if err != nil {
-			return fmt.Errorf("encrypt clipboard data: %w", err)
+			return clipboardDispatchResult{}, fmt.Errorf("encrypt clipboard data: %w", err)
 		}
 		body, err = pkgcrypto.EncodeToJSONString(encrypted)
 		if err != nil {
-			return fmt.Errorf("encode encrypted clipboard data: %w", err)
+			return clipboardDispatchResult{}, fmt.Errorf("encode encrypted clipboard data: %w", err)
 		}
 	}
 
-	return dispatchClipboardBody(
+	if isSingleRouteClipboardType(clipData.Type) {
+		targetSessionID := targetSessionIDForSingleRouteClipboardData(clipData)
+		return appDispatchClipboardBodySingle(
+			body,
+			func(payload string) int {
+				if a.p2p == nil {
+					return 0
+				}
+				if targetSessionID != "" {
+					return a.p2p.SendTo(targetSessionID, payload)
+				}
+				return a.p2p.Send(payload)
+			},
+			func() bool { return a.stomp != nil && a.stomp.IsConnected() },
+			func(payload string) error {
+				return a.stomp.Send(payload)
+			},
+		)
+	}
+
+	return appDispatchClipboardBodyDetailed(
 		body,
 		func() bool { return a.stomp != nil && a.stomp.IsConnected() },
 		func(payload string) error {
@@ -157,12 +190,61 @@ func (a *Application) sendClipboardData(clipData *protocol.ClipboardData) error 
 	)
 }
 
-func (a *Application) recordOutgoingLazyHistory(clipData *protocol.ClipboardData) {
+func isSingleRouteClipboardType(messageType string) bool {
+	switch messageType {
+	case constants.TypeFileRequest,
+		constants.TypeFileChunk,
+		constants.TypeFileComplete,
+		constants.TypeFileError,
+		constants.TypeFileRelease:
+		return true
+	default:
+		return false
+	}
+}
+
+func targetSessionIDForSingleRouteClipboardData(clipData *protocol.ClipboardData) string {
+	if clipData == nil || clipData.Payload == "" {
+		return ""
+	}
+	switch clipData.Type {
+	case constants.TypeFileRequest:
+		payload, err := protocol.DecodePayload[protocol.FileRequest](clipData.Payload)
+		if err == nil && payload != nil {
+			return payload.TargetSessionID
+		}
+	case constants.TypeFileChunk:
+		payload, err := protocol.DecodePayload[protocol.FileChunk](clipData.Payload)
+		if err == nil && payload != nil {
+			return payload.TargetSessionID
+		}
+	case constants.TypeFileComplete:
+		payload, err := protocol.DecodePayload[protocol.FileComplete](clipData.Payload)
+		if err == nil && payload != nil {
+			return payload.TargetSessionID
+		}
+	case constants.TypeFileError:
+		payload, err := protocol.DecodePayload[protocol.FileError](clipData.Payload)
+		if err == nil && payload != nil {
+			return payload.TargetSessionID
+		}
+	case constants.TypeFileRelease:
+		payload, err := protocol.DecodePayload[protocol.FileRelease](clipData.Payload)
+		if err == nil && payload != nil {
+			return payload.TargetSessionID
+		}
+	}
+	return ""
+}
+
+func (a *Application) recordOutgoingClipboardHistory(clipData *protocol.ClipboardData) {
 	if a == nil || a.history == nil || clipData == nil {
 		return
 	}
 
 	switch clipData.Type {
+	case constants.TypeText:
+		a.recordOutgoingTextHistory(clipData)
 	case constants.TypeImage:
 		a.recordOutgoingImageHistory(clipData)
 	case constants.TypeFileStub:
@@ -170,21 +252,37 @@ func (a *Application) recordOutgoingLazyHistory(clipData *protocol.ClipboardData
 	}
 }
 
+func (a *Application) recordOutgoingTextHistory(clipData *protocol.ClipboardData) {
+	now := time.Now()
+	item := &history.HistoryItem{
+		Type:              constants.TypeText,
+		State:             history.StateReady,
+		PayloadType:       constants.TypeText,
+		Payload:           clipData.Payload,
+		SourceSessionID:   clipboardSourceSessionID(clipData),
+		SourceDevice:      a.localHistorySourceDevice(),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		PendingReplayMode: string(ReplayModeNone),
+	}
+	a.history.AddItem(item)
+	if latest := a.history.GetActive(); latest != nil {
+		a.setSharedClipboardHistoryItem(latest.ID)
+	}
+}
+
 // recordOutgoingImageHistory 为本地截图/复制的图片创建 history item。
 // 图片数据（base64 Payload）保留在内存中，用户按热键时才落盘到 /tmp。
 func (a *Application) recordOutgoingImageHistory(clipData *protocol.ClipboardData) {
 	now := time.Now()
-	sourceDevice := "local"
-	if a.cfg != nil && a.cfg.Username != "" {
-		sourceDevice = a.cfg.Username
-	}
 	item := &history.HistoryItem{
 		Type:              constants.TypeImage,
 		State:             history.StateReady,
 		PayloadType:       constants.TypeImage,
 		Payload:           clipData.Payload,
 		FileName:          clipData.FileName,
-		SourceDevice:      sourceDevice,
+		SourceSessionID:   clipboardSourceSessionID(clipData),
+		SourceDevice:      a.localHistorySourceDevice(),
 		CreatedAt:         now,
 		UpdatedAt:         now,
 		PendingReplayMode: string(ReplayModeNone),
@@ -195,6 +293,15 @@ func (a *Application) recordOutgoingImageHistory(clipData *protocol.ClipboardDat
 		a.setLastFileStubHistoryItem(latest.ID)
 	}
 	slog.Info("应用：本地截图已加入历史（内存）", "大小", sizefmt.HumanSizeFromPayload(clipData.Type, clipData.Payload))
+}
+
+func (a *Application) localHistorySourceDevice() string {
+	if a != nil && a.cfg != nil {
+		if username := strings.TrimSpace(a.cfg.Username); username != "" {
+			return username
+		}
+	}
+	return "local"
 }
 
 func (a *Application) recordOutgoingFileStubHistory(clipData *protocol.ClipboardData) {
@@ -241,11 +348,23 @@ func dispatchClipboardBody(
 	stompSend func(string) error,
 	p2pSend func(string) int,
 ) error {
+	_, err := dispatchClipboardBodyDetailed(body, stompConnected, stompSend, p2pSend)
+	return err
+}
+
+func dispatchClipboardBodyDetailed(
+	body string,
+	stompConnected func() bool,
+	stompSend func(string) error,
+	p2pSend func(string) int,
+) (clipboardDispatchResult, error) {
+	result := clipboardDispatchResult{}
 	// P2P 尝试发送（快速通道）
 	p2pSent := false
 	if p2pSend != nil {
 		if sentPeers := p2pSend(body); sentPeers > 0 {
 			p2pSent = true
+			result.P2PSent = true
 		}
 	}
 
@@ -255,17 +374,42 @@ func dispatchClipboardBody(
 	if stompConnected != nil && stompSend != nil && stompConnected() {
 		if err := stompSend(body); err != nil {
 			if !p2pSent {
-				return err
+				return result, err
 			}
 			// P2P 已发送成功，STOMP 失败可以容忍
 			slog.Debug("剪贴板：STOMP 发送失败但 P2P 已发送", "error", err)
+		} else {
+			result.StompSent = true
 		}
-		return nil
+		return result, nil
 	}
 
 	// 没有 STOMP 连接
 	if p2pSent {
-		return nil
+		return result, nil
 	}
-	return ErrClipboardTransportUnavailable
+	return result, ErrClipboardTransportUnavailable
+}
+
+func dispatchClipboardBodySingleRoute(
+	body string,
+	p2pSend func(string) int,
+	stompConnected func() bool,
+	stompSend func(string) error,
+) (clipboardDispatchResult, error) {
+	result := clipboardDispatchResult{}
+	if p2pSend != nil {
+		if sentPeers := p2pSend(body); sentPeers > 0 {
+			result.P2PSent = true
+			return result, nil
+		}
+	}
+	if stompConnected != nil && stompSend != nil && stompConnected() {
+		if err := stompSend(body); err != nil {
+			return result, err
+		}
+		result.StompSent = true
+		return result, nil
+	}
+	return result, ErrClipboardTransportUnavailable
 }

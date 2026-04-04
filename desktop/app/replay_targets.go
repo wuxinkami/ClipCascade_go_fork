@@ -78,11 +78,12 @@ func reservedPathsForManifest(manifest *protocol.FileStubManifest, createdAt tim
 	}
 
 	candidateName := reservedManifestFileName(manifest, createdAt)
-	reservedPath, err := reserveUniquePath(filepath.Join(tempDir, candidateName))
+	// 幂等：直接使用原文件名
+	destPath, err := safeJoinUnderBase(tempDir, candidateName)
 	if err != nil {
 		return nil, err
 	}
-	return []string{reservedPath}, nil
+	return []string{destPath}, nil
 }
 
 func reservedManifestFileName(manifest *protocol.FileStubManifest, createdAt time.Time) string {
@@ -107,11 +108,17 @@ func reservedManifestFileName(manifest *protocol.FileStubManifest, createdAt tim
 			return fmt.Sprintf("file_%s.bin", timestamp.Format("20060102150405"))
 		}
 		return sanitizeFileName(name)
-	case protocol.FileKindMultiFile, protocol.FileKindFolder:
-		return timestamp.Format("20060102150405")
+	case protocol.FileKindFolder:
+		name := strings.TrimSpace(manifestPrimaryName(manifest))
+		if name == "" {
+			return fmt.Sprintf("folder_%s", timestamp.Format("20060102150405"))
+		}
+		return sanitizeFileName(name)
+	case protocol.FileKindMultiFile:
+		return replayTimestampDirName(timestamp)
 	default:
 		if manifest.EntryCount > 1 {
-			return timestamp.Format("20060102150405")
+			return replayTimestampDirName(timestamp)
 		}
 		name := sanitizeFileName(manifestPrimaryName(manifest))
 		if name == "" {
@@ -172,9 +179,9 @@ func (a *Application) completePendingReplayMode(transferID string) error {
 	switch pendingMode {
 	case ReplayModeSystemClipboardPaste:
 		slog.Info("应用：completePendingReplayMode 执行真实内容写入系统剪贴板")
-		_, err := a.stageRealClipboardWithAutoPaste(item)
+		_, err := a.stageRealClipboardContent(item)
 		if err != nil {
-			slog.Warn("应用：completePendingReplayMode stageRealClipboardWithAutoPaste 失败", "error", err)
+			slog.Warn("应用：completePendingReplayMode stageRealClipboardContent 失败", "error", err)
 			return err
 		}
 		if _, err := a.history.Mutate(item.ID, func(next *history.HistoryItem) error {

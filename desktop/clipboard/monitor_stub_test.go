@@ -2,14 +2,17 @@ package clipboard
 
 import (
 	"encoding/base64"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/clipcascade/pkg/constants"
+	pkgcrypto "github.com/clipcascade/pkg/crypto"
 )
 
 func TestBuildAndParseFileStubPayload(t *testing.T) {
@@ -192,6 +195,75 @@ func TestSelectFileContentSingleImageFileUsesFileStub(t *testing.T) {
 	}
 	if got.Payload != buildFileStubPayload([]string{filePath}) {
 		t.Fatalf("payload mismatch")
+	}
+}
+
+func TestStageFilePathsRestoresClipboardStateOnFailure(t *testing.T) {
+	manager := &Manager{
+		lastHash:        123,
+		suppressedEdits: 2,
+		suppressedAt:    time.Unix(10, 0),
+	}
+
+	origSetPlatformFilePaths := monitorSetPlatformFilePaths
+	monitorSetPlatformFilePaths = func(paths []string) error {
+		return errors.New("write failed")
+	}
+	t.Cleanup(func() {
+		monitorSetPlatformFilePaths = origSetPlatformFilePaths
+	})
+
+	err := manager.StageFilePaths([]string{"/tmp/a.txt", "/tmp/b.txt"})
+	if err == nil {
+		t.Fatal("StageFilePaths() error = nil, want non-nil")
+	}
+	if manager.lastHash != 123 {
+		t.Fatalf("lastHash = %d, want 123", manager.lastHash)
+	}
+	if manager.suppressedEdits != 2 {
+		t.Fatalf("suppressedEdits = %d, want 2", manager.suppressedEdits)
+	}
+	if !manager.suppressedAt.Equal(time.Unix(10, 0)) {
+		t.Fatalf("suppressedAt = %v, want %v", manager.suppressedAt, time.Unix(10, 0))
+	}
+}
+
+func TestStageFilePathsPreparesSuppressionOnSuccess(t *testing.T) {
+	manager := &Manager{}
+	var gotPaths []string
+
+	origSetPlatformFilePaths := monitorSetPlatformFilePaths
+	monitorSetPlatformFilePaths = func(paths []string) error {
+		gotPaths = append([]string(nil), paths...)
+		return nil
+	}
+	t.Cleanup(func() {
+		monitorSetPlatformFilePaths = origSetPlatformFilePaths
+	})
+
+	input := []string{" /tmp/a.txt ", "", "/tmp/b.txt"}
+	if err := manager.StageFilePaths(input); err != nil {
+		t.Fatalf("StageFilePaths() error = %v", err)
+	}
+
+	wantPaths := []string{"/tmp/a.txt", "/tmp/b.txt"}
+	if len(gotPaths) != len(wantPaths) {
+		t.Fatalf("gotPaths = %#v, want %#v", gotPaths, wantPaths)
+	}
+	for i := range wantPaths {
+		if gotPaths[i] != wantPaths[i] {
+			t.Fatalf("gotPaths[%d] = %q, want %q", i, gotPaths[i], wantPaths[i])
+		}
+	}
+	if manager.suppressedEdits != 3 {
+		t.Fatalf("suppressedEdits = %d, want 3", manager.suppressedEdits)
+	}
+	wantHash := pkgcrypto.XXHash64(buildFileStubPayload(wantPaths))
+	if manager.lastHash != wantHash {
+		t.Fatalf("lastHash = %d, want %d", manager.lastHash, wantHash)
+	}
+	if manager.suppressedAt.IsZero() {
+		t.Fatal("suppressedAt is zero, want prepared timestamp")
 	}
 }
 

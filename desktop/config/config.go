@@ -26,15 +26,17 @@ const configMasterKeySize = 32
 type Config struct {
 	ServerURL              string `json:"server_url"` // e.g. "http://localhost:8080"
 	Username               string `json:"username"`
-	Password               string `json:"-"`                         // 运行时明文密码，不直接序列化
-	PasswordEncrypted      string `json:"password_encrypted"`        // 加密后的密码密文（JSON 格式）
+	Password               string `json:"-"`                  // 运行时明文密码，不直接序列化
+	PasswordEncrypted      string `json:"password_encrypted"` // 加密后的密码密文（JSON 格式）
 	E2EEEnabled            bool   `json:"e2ee_enabled"`
 	P2PEnabled             bool   `json:"p2p_enabled"`
 	StunURL                string `json:"stun_url"`
 	AutoReconnect          bool   `json:"auto_reconnect"`
 	ReconnectDelay         int    `json:"reconnect_delay_sec"`       // seconds
 	FileMemoryThresholdMiB int64  `json:"file_memory_threshold_mib"` // MiB
-	WebPort                int    `json:"web_port"`                  // 控制面板监听端口，默认 6666
+	WebPort                int    `json:"web_port"`                  // 控制面板监听端口，默认 16666
+	WebPassword            string `json:"-"`                         // 运行时控制面板明文密码，不直接序列化
+	WebPasswordEncrypted   string `json:"web_password_encrypted"`    // 加密后的控制面板密码
 	FilePath               string `json:"-"`                         // config 文件路径，不序列化
 
 	// 兼容旧版：如果 JSON 中存在明文 password 字段，反序列化时先读取再迁移。
@@ -167,7 +169,7 @@ func Load() *Config {
 	cfg.FilePath = cfgPath
 	cfg.normalize()
 
-	// 解密密码：优先使用加密版本
+	// 解密服务端密码：优先使用加密版本
 	if cfg.PasswordEncrypted != "" {
 		decrypted, err := decryptPassword(cfg.PasswordEncrypted)
 		if err != nil {
@@ -181,6 +183,17 @@ func Load() *Config {
 		cfg.Password = cfg.LegacyPassword
 		cfg.LegacyPassword = "" // 清除内存中的明文残留
 		slog.Info("config: 检测到旧版明文密码，将在下次保存时自动迁移到加密存储")
+	}
+
+	// 解密控制面板密码
+	if cfg.WebPasswordEncrypted != "" {
+		decrypted, err := decryptPassword(cfg.WebPasswordEncrypted)
+		if err != nil {
+			slog.Warn("config: 解密控制面板密码失败", "error", err)
+			cfg.WebPassword = ""
+		} else {
+			cfg.WebPassword = decrypted
+		}
 	}
 
 	if envPassword := os.Getenv("CLIPCASCADE_PASSWORD"); envPassword != "" {
@@ -214,6 +227,19 @@ func (c *Config) Save() error {
 		}
 	} else {
 		toSave.PasswordEncrypted = ""
+	}
+
+	// 加密控制面板密码
+	if toSave.WebPassword != "" {
+		encrypted, err := encryptPassword(toSave.WebPassword)
+		if err != nil {
+			slog.Warn("config: 加密控制面板密码失败", "error", err)
+			toSave.WebPasswordEncrypted = ""
+		} else {
+			toSave.WebPasswordEncrypted = encrypted
+		}
+	} else {
+		toSave.WebPasswordEncrypted = ""
 	}
 
 	// 确保旧版明文密码字段不会写入磁盘

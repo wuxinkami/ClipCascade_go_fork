@@ -99,10 +99,9 @@ jobs:
             goos: darwin
             goarch: amd64
           - os: windows-amd64
-            runner: ubuntu-latest
+            runner: windows-latest
             goos: windows
             goarch: amd64
-            cgo: 0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -112,23 +111,26 @@ jobs:
       - name: Install Linux dependencies
         if: matrix.goos == 'linux'
         run: sudo apt-get update && sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libgl1-mesa-dev libxxf86vm-dev libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev pkg-config
-      - name: Build
+      - name: Build (Linux/macOS)
+        if: matrix.goos != 'windows'
         shell: bash
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: ${{ matrix.cgo || '1' }}
+          CGO_ENABLED: "1"
           CGO_CFLAGS: ${{ matrix.goos == 'darwin' && matrix.goarch == 'amd64' && '-arch x86_64' || '' }}
           CGO_LDFLAGS: ${{ matrix.goos == 'darwin' && matrix.goarch == 'amd64' && '-arch x86_64' || '' }}
         run: |
           cd desktop
-          EXT=""
-          EXTRA_LDFLAGS="-s -w"
-          if [ "$GOOS" = "windows" ]; then
-            EXT=".exe"
-            EXTRA_LDFLAGS="-s -w -H=windowsgui"
-          fi
-          go build -ldflags="$EXTRA_LDFLAGS" -o ../clipcascade-desktop-${{ matrix.goos }}-${{ matrix.goarch }}${EXT} .
+          go build -ldflags="-s -w" -o ../clipcascade-desktop-${{ matrix.goos }}-${{ matrix.goarch }} .
+      - name: Build (Windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          cd desktop
+          go build -ldflags="-s -w -H=windowsgui" -o ../clipcascade-desktop-windows-amd64.exe .
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.os }}

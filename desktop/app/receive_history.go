@@ -95,6 +95,9 @@ func (a *Application) admitReceivedClipboardData(clipData *protocol.ClipboardDat
 	if a.history == nil {
 		return receiveActionIgnore
 	}
+	if a.reuseLocalEchoHistoryItem(decision.item) {
+		return receiveActionAdmitHistory
+	}
 
 	// 对于已存在的 TransferID（含自发自收场景），复用现有 history item，
 	// 但不提前 return，让后续的 incoming transfer 注册逻辑也能执行。
@@ -130,9 +133,44 @@ func (a *Application) admitReceivedClipboardData(clipData *protocol.ClipboardDat
 		if manifest, err := protocol.DecodePayload[protocol.FileStubManifest](clipData.Payload); err == nil && manifest.TransferID != "" {
 			stored := a.history.GetByTransferID(manifest.TransferID)
 			if stored != nil {
-				a.transfers.RegisterIncoming(*manifest, stored.ID, stored.LastChunkIdx)
+				if _, err := a.transfers.mutateIncoming(manifest.TransferID, func(incoming *incomingTransfer) error {
+					incoming.Manifest = *manifest
+					if incoming.HistoryItemID == "" {
+						incoming.HistoryItemID = stored.ID
+					}
+					return nil
+				}); err != nil {
+					a.transfers.RegisterIncoming(*manifest, stored.ID, stored.LastChunkIdx)
+				}
 			}
 		}
 	}
 	return receiveActionAdmitHistory
+}
+
+func (a *Application) reuseLocalEchoHistoryItem(item *history.HistoryItem) bool {
+	if a == nil || a.history == nil || item == nil {
+		return false
+	}
+	if item.Type == constants.TypeFileStub || !a.isLocalOriginItem(item) {
+		return false
+	}
+
+	for _, existing := range a.history.List() {
+		if existing == nil {
+			continue
+		}
+		if existing.Type != item.Type ||
+			existing.Payload != item.Payload ||
+			existing.FileName != item.FileName ||
+			existing.SourceSessionID != item.SourceSessionID {
+			continue
+		}
+		a.setSharedClipboardHistoryItem(existing.ID)
+		if existing.Type == constants.TypeImage {
+			a.setLastFileStubHistoryItem(existing.ID)
+		}
+		return true
+	}
+	return false
 }

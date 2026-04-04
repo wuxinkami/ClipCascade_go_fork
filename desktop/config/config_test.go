@@ -117,8 +117,8 @@ func TestConfigFileMemoryThresholdBytesUsesDefaultAndCapsMax(t *testing.T) {
 
 func TestDefaultConfigWebPort(t *testing.T) {
 	cfg := DefaultConfig()
-	if cfg.WebPort != 6666 {
-		t.Fatalf("default web port = %d, want 6666", cfg.WebPort)
+	if cfg.WebPort != 16666 {
+		t.Fatalf("default web port = %d, want 16666", cfg.WebPort)
 	}
 }
 
@@ -182,6 +182,46 @@ func TestPasswordEncryptionRoundTrip(t *testing.T) {
 	}
 	if recoveredPw != plainPassword {
 		t.Fatalf("recovered password = %q, want %q", recoveredPw, plainPassword)
+	}
+}
+
+func TestSaveClearsPersistedWebPasswordWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	cfg := DefaultConfig()
+	cfg.FilePath = cfgPath
+	cfg.WebPassword = "panel-secret"
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("first Save() error = %v", err)
+	}
+
+	var saved Config
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("ReadFile() after first save error = %v", err)
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("Unmarshal() after first save error = %v", err)
+	}
+	if saved.WebPasswordEncrypted == "" {
+		t.Fatal("WebPasswordEncrypted should be set after saving a password")
+	}
+
+	cfg.WebPassword = ""
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("second Save() error = %v", err)
+	}
+
+	data, err = os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("ReadFile() after second save error = %v", err)
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("Unmarshal() after second save error = %v", err)
+	}
+	if saved.WebPasswordEncrypted != "" {
+		t.Fatalf("WebPasswordEncrypted = %q, want empty after clearing password", saved.WebPasswordEncrypted)
 	}
 }
 

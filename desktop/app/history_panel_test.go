@@ -178,6 +178,50 @@ func TestHistoryPanelServerSetActiveEndpointUpdatesHistory(t *testing.T) {
 	}
 }
 
+func TestHistoryPanelSnapshotFollowsLatestSharedClipboardItem(t *testing.T) {
+	manager := history.NewManager(10)
+	base := time.Date(2026, 3, 15, 16, 30, 0, 0, time.UTC)
+	manager.AddItem(&history.HistoryItem{
+		ID:        "text-1",
+		Type:      constants.TypeText,
+		State:     history.StateReady,
+		Payload:   "first",
+		CreatedAt: base,
+		UpdatedAt: base,
+	})
+	manager.AddItem(&history.HistoryItem{
+		ID:        "text-2",
+		Type:      constants.TypeText,
+		State:     history.StateReady,
+		Payload:   "second",
+		CreatedAt: base.Add(time.Minute),
+		UpdatedAt: base.Add(time.Minute),
+	})
+
+	if !manager.SetActive("text-1") {
+		t.Fatal("SetActive(text-1) should succeed")
+	}
+
+	app := &Application{history: manager}
+	app.setSharedClipboardHistoryItem("text-2")
+
+	panel := newHistoryPanelServer(manager, func(id string, mode ReplayMode) error { return nil })
+	payload := panel.snapshot()
+
+	if payload.ActiveID != "text-2" {
+		t.Fatalf("active id = %q, want %q", payload.ActiveID, "text-2")
+	}
+	if len(payload.Items) < 2 {
+		t.Fatalf("snapshot returned %d items, want at least 2", len(payload.Items))
+	}
+	if !payload.Items[0].Active || payload.Items[0].ID != "text-2" {
+		t.Fatalf("latest shared item should be active, got %+v", payload.Items[0])
+	}
+	if payload.Overview.ActiveSummary != "second" {
+		t.Fatalf("active summary = %q, want %q", payload.Overview.ActiveSummary, "second")
+	}
+}
+
 func TestHistoryPanelServerReplayEndpointUsesInjectedCallback(t *testing.T) {
 	manager := history.NewManager(10)
 	now := time.Date(2026, 3, 15, 17, 0, 0, 0, time.UTC)

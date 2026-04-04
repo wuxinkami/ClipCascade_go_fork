@@ -134,7 +134,7 @@ func TestTriggerReplayActiveHistoryItemNotifiesDownloadStarted(t *testing.T) {
 	}
 }
 
-func TestTriggerPasteRealContentHistoryItemNotifiesManualPasteFallback(t *testing.T) {
+func TestTriggerPasteRealContentHistoryItemClipboardCopyDoesNotNotify(t *testing.T) {
 	app := &Application{}
 	notified := false
 
@@ -147,9 +147,8 @@ func TestTriggerPasteRealContentHistoryItemNotifiesManualPasteFallback(t *testin
 	origReplay := appReplaySharedClipboardItem
 	appReplaySharedClipboardItem = func(a *Application, mode ReplayMode) (ReplayResult, error) {
 		return ReplayResult{
-			Action:              replayActionClipboardStaged,
-			ManualPasteRequired: true,
-			Message:             "Real content staged. Press Ctrl+V manually.",
+			Action:  replayActionClipboardStaged,
+			Message: "Copied real content to clipboard",
 		}, nil
 	}
 	t.Cleanup(func() { appReplaySharedClipboardItem = origReplay })

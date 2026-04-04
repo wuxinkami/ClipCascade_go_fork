@@ -110,6 +110,45 @@ func TestActiveExplicit(t *testing.T) {
 	}
 }
 
+func TestAddItemPromotesNewestItemEvenAfterManualSelection(t *testing.T) {
+	mgr := NewManager(10)
+	base := time.Date(2026, 3, 15, 8, 0, 0, 0, time.UTC)
+
+	mgr.AddItem(&HistoryItem{
+		ID:        "first",
+		Type:      constants.TypeText,
+		State:     StateReady,
+		CreatedAt: base,
+		UpdatedAt: base,
+	})
+	mgr.AddItem(&HistoryItem{
+		ID:        "second",
+		Type:      constants.TypeText,
+		State:     StateReady,
+		CreatedAt: base.Add(time.Minute),
+		UpdatedAt: base.Add(time.Minute),
+	})
+	if !mgr.SetActive("first") {
+		t.Fatal("SetActive(first) = false")
+	}
+
+	mgr.AddItem(&HistoryItem{
+		ID:        "third",
+		Type:      constants.TypeText,
+		State:     StateReady,
+		CreatedAt: base.Add(2 * time.Minute),
+		UpdatedAt: base.Add(2 * time.Minute),
+	})
+
+	active := mgr.GetActive()
+	if active == nil {
+		t.Fatal("GetActive returned nil")
+	}
+	if active.ID != "third" {
+		t.Fatalf("active id = %q, want %q", active.ID, "third")
+	}
+}
+
 func TestAddItemAllowsV1InitialStates(t *testing.T) {
 	mgr := NewManager(10)
 	base := time.Date(2026, 3, 15, 8, 0, 0, 0, time.UTC)

@@ -98,6 +98,8 @@ func isWayland() bool { return false }
 // setPlatformText macOS 平台不需要特殊处理，返回降级错误。
 func setPlatformText(_ string) error { return errNotWayland }
 
+func setPlatformImage(_ []byte) error { return errNotWayland }
+
 var errNotWayland = errors.New("not wayland")
 
 func setPlatformFilePaths(paths []string) error {

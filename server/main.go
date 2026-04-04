@@ -55,6 +55,8 @@ func main() {
 		"signup", cfg.SignupEnabled,
 		"max_msg_mib", cfg.MaxMessageSizeMiB,
 	)
+	wsReadLimitBytes := handler.ResolveWebSocketReadLimitBytes(cfg.MaxMessageSizeBytes, cfg.MaxMessageSizeMiB)
+	slog.Info("WebSocket 帧读取限制已设置", "limit_bytes", wsReadLimitBytes)
 
 	// 初始化界面数据库
 	dbDir := filepath.Dir(cfg.DatabasePath)
@@ -110,7 +112,7 @@ func main() {
 	}))
 
 	// 创建 handlers 和中间件
-	wsHub := handler.NewWSHub()
+	wsHub := handler.NewWSHub(wsReadLimitBytes)
 	bfa := middleware.NewBruteForceProtection(cfg)
 	go bfa.Cleanup() // 启动后台清理任务
 
@@ -203,16 +205,22 @@ func main() {
 	}))
 
 	// P2P WebSocket signaling 端点
-	p2pSignaling := handler.NewP2PSignaling()
-	app.Use("/p2p", func(c *fiber.Ctx) error {
-		if websocket.IsWebSocketUpgrade(c) {
-			return c.Next()
-		}
-		return fiber.ErrUpgradeRequired
-	})
-	app.Get("/p2p", websocket.New(func(c *websocket.Conn) {
-		p2pSignaling.HandleP2P(c)
-	}))
+	p2pSignaling := handler.NewP2PSignaling(wsReadLimitBytes)
+	if cfg.P2PEnabled {
+		app.Use("/p2p", func(c *fiber.Ctx) error {
+			if websocket.IsWebSocketUpgrade(c) {
+				return c.Next()
+			}
+			return fiber.ErrUpgradeRequired
+		})
+		app.Get("/p2p", websocket.New(func(c *websocket.Conn) {
+			p2pSignaling.HandleP2P(c)
+		}))
+	} else {
+		app.All("/p2p", func(c *fiber.Ctx) error {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "p2p disabled"})
+		})
+	}
 
 	// 仅限 admin 的路由
 	adminHandler := handler.NewAdminHandler(db, cfg, wsHub, p2pSignaling)

@@ -8,10 +8,10 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/godbus/dbus/v5"
-	"github.com/google/uuid"
 )
 
 const (
@@ -26,8 +26,11 @@ const (
 )
 
 type waylandPortalHotkeys struct {
+	mu            sync.RWMutex
 	conn          *dbus.Conn
 	signals       chan *dbus.Signal
+	done          chan struct{}
+	closeOnce     sync.Once
 	sessionHandle dbus.ObjectPath
 	bindings      map[string]func()
 }
@@ -50,6 +53,7 @@ func newWaylandPortalHotkeys(bindings hotkeyBindings) (*waylandPortalHotkeys, er
 	portal := &waylandPortalHotkeys{
 		conn:    conn,
 		signals: make(chan *dbus.Signal, 32),
+		done:    make(chan struct{}),
 		bindings: map[string]func(){
 			"send_current":      bindings.sendCurrentClipboard,
 			"paste_placeholder": bindings.pastePlaceholder,
@@ -83,20 +87,40 @@ func newWaylandPortalHotkeys(bindings hotkeyBindings) (*waylandPortalHotkeys, er
 }
 
 func (m *waylandPortalHotkeys) Run() {
-	for signal := range m.signals {
-		if signal == nil || signal.Name != portalActivatedSignal || len(signal.Body) < 2 {
-			continue
-		}
-		sessionPath, ok := signal.Body[0].(dbus.ObjectPath)
-		if !ok || sessionPath != m.sessionHandle {
-			continue
-		}
-		shortcutID, ok := signal.Body[1].(string)
-		if !ok || shortcutID == "" {
-			continue
-		}
-		if handler := m.bindings[shortcutID]; handler != nil {
-			go handler()
+	m.mu.RLock()
+	signals := m.signals
+	done := m.done
+	m.mu.RUnlock()
+	if signals == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-done:
+			return
+		case signal, ok := <-signals:
+			if !ok {
+				return
+			}
+			if signal == nil || signal.Name != portalActivatedSignal || len(signal.Body) < 2 {
+				continue
+			}
+			m.mu.RLock()
+			sessionHandle := m.sessionHandle
+			handlerMap := m.bindings
+			m.mu.RUnlock()
+			sessionPath, ok := signal.Body[0].(dbus.ObjectPath)
+			if !ok || sessionPath != sessionHandle {
+				continue
+			}
+			shortcutID, ok := signal.Body[1].(string)
+			if !ok || shortcutID == "" {
+				continue
+			}
+			if handler := handlerMap[shortcutID]; handler != nil {
+				go handler()
+			}
 		}
 	}
 }
@@ -105,18 +129,28 @@ func (m *waylandPortalHotkeys) Close() {
 	if m == nil {
 		return
 	}
-	if m.conn != nil && m.sessionHandle != "" {
-		_ = m.conn.Object(portalBusName, m.sessionHandle).Call(portalSessionInterface+".Close", 0).Err
-	}
-	if m.conn != nil {
-		m.conn.RemoveSignal(m.signals)
-		_ = m.conn.Close()
+	m.closeOnce.Do(func() {
+		m.mu.Lock()
+		conn := m.conn
+		signals := m.signals
+		sessionHandle := m.sessionHandle
+		done := m.done
 		m.conn = nil
-	}
-	if m.signals != nil {
-		close(m.signals)
-		m.signals = nil
-	}
+		m.mu.Unlock()
+
+		if done != nil {
+			close(done)
+		}
+		if conn != nil && sessionHandle != "" {
+			_ = conn.Object(portalBusName, sessionHandle).Call(portalSessionInterface+".Close", 0).Err
+		}
+		if conn != nil {
+			if signals != nil {
+				conn.RemoveSignal(signals)
+			}
+			_ = conn.Close()
+		}
+	})
 }
 
 func (m *waylandPortalHotkeys) createSession() (dbus.ObjectPath, error) {
@@ -302,8 +336,6 @@ func (m *waylandPortalHotkeys) waitForPortalResponse(requestHandle dbus.ObjectPa
 }
 
 func portalToken(prefix string) string {
-	token := uuid.NewString()
-	token = strings.ReplaceAll(token, "-", "_")
 	prefix = strings.ReplaceAll(prefix, "-", "_")
-	return fmt.Sprintf("%s_%s", prefix, token)
+	return prefix
 }

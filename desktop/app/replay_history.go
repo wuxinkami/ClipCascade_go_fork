@@ -6,11 +6,13 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/clipcascade/desktop/history"
 	"github.com/clipcascade/pkg/constants"
+	"github.com/clipcascade/pkg/protocol"
 )
 
 var (
@@ -27,13 +29,19 @@ var (
 	appReplaySharedClipboardItem = func(a *Application, mode ReplayMode) (ReplayResult, error) {
 		return a.ReplaySharedClipboardItem(mode)
 	}
-	appRequestFileTransfer = func(a *Application, item *history.HistoryItem) error { return a.requestFileTransfer(item) }
-	appStageClipboardText  = func(a *Application, text string) error { return a.clip.StageText(text) }
-	appStageClipboardFiles = func(a *Application, paths []string) error { return a.clip.StageFilePaths(paths) }
-	appSimulateAutoPaste   = func() error { return simulateAutoPaste() }
-	appIsWaylandSession    = func() bool { return runtime.GOOS == "linux" && os.Getenv("WAYLAND_DISPLAY") != "" }
-	appSleep               = func(delay time.Duration) { time.Sleep(delay) }
-	appRealClipboardMu     sync.Mutex
+	appRequestFileTransfer   = func(a *Application, item *history.HistoryItem) error { return a.requestFileTransfer(item) }
+	appStageClipboardText    = func(a *Application, text string) error { return a.clip.StageText(text) }
+	appStageClipboardImage   = func(a *Application, path string) error { return a.clip.StageImageFile(path) }
+	appStageClipboardFiles   = func(a *Application, paths []string) error { return a.clip.StageFilePaths(paths) }
+	appStartImageMaterialize = func(a *Application, item *history.HistoryItem) {
+		if a != nil {
+			a.ensureImageMaterializedAsync(item)
+		}
+	}
+	appSimulateAutoPaste = func() error { return simulateAutoPaste() }
+	appIsWaylandSession  = func() bool { return runtime.GOOS == "linux" && os.Getenv("WAYLAND_DISPLAY") != "" }
+	appSleep             = func(delay time.Duration) { time.Sleep(delay) }
+	appRealClipboardMu   sync.Mutex
 )
 
 const waylandFileClipboardSettleWait = 120 * time.Millisecond
@@ -115,7 +123,7 @@ func replayHistoryItem(item *history.HistoryItem, exec replayExecutor, opts repl
 	if mode == ReplayModeNone {
 		mode = ReplayModeClipboardImmediate
 	}
-	autoPasteRequested := opts.autoPaste || mode == ReplayModePathPlaceholderPaste || mode == ReplayModeSystemClipboardPaste
+	autoPasteRequested := opts.autoPaste
 
 	result := ReplayResult{
 		Action:             replayActionClipboardStaged,
@@ -265,7 +273,13 @@ func (a *Application) replayReadyClipboardItem(item *history.HistoryItem, mode R
 		return ReplayResult{}, fmt.Errorf("%w: %s", ErrUnsupportedReplayState, item.State)
 	}
 
-	a.clip.Paste(item.Payload, item.Type, item.FileName)
+	if !a.writeClipboardPayloadIfAllowed(clipboardWriteReasonReplayText, &protocol.ClipboardData{
+		Type:     item.Type,
+		Payload:  item.Payload,
+		FileName: item.FileName,
+	}) {
+		return ReplayResult{}, ErrClipboardUnavailable
+	}
 	if item.State == history.StateReady {
 		if !a.history.UpdateState(item.ID, history.StateConsumed) {
 			return ReplayResult{}, ErrReplayStateUpdate
@@ -273,27 +287,21 @@ func (a *Application) replayReadyClipboardItem(item *history.HistoryItem, mode R
 	}
 
 	result := ReplayResult{
-		Action:             replayActionClipboardStaged,
-		Type:               item.Type,
-		Mode:               mode,
-		AutoPasteRequested: mode != ReplayModeClipboardImmediate,
-		Message:            "Staged active item to clipboard",
-	}
-	if mode != ReplayModeClipboardImmediate {
-		a.applyAutoPasteResult(&result)
-		if result.ManualPasteRequired {
-			result.Message = "Clipboard staged. Press Ctrl+V manually."
-		} else {
-			result.Message = "Pasted active item"
-		}
+		Action:  replayActionClipboardStaged,
+		Type:    item.Type,
+		Mode:    mode,
+		Message: "Copied active item to clipboard",
 	}
 	return result, nil
 }
 
 func (a *Application) replayLazyClipboardItem(item *history.HistoryItem, mode ReplayMode) (ReplayResult, error) {
-	// 图片延迟物化：首次热键触发时才从内存（base64 Payload）落盘到 /tmp
-	// ensureImageMaterialized 内部会检查文件是否真实存在
-	if item.Type == constants.TypeImage && item.Payload != "" {
+	if mode == ReplayModePathPlaceholderPaste && item.Type != constants.TypeImage {
+		return ReplayResult{}, ErrReplayModeNotApplicable
+	}
+	// 图片延迟物化：Ctrl+Alt+V 先给路径并自动粘贴，再后台把内存图片写到 /tmp。
+	// 只有需要真实文件剪贴板的路径，才同步等待图片物化完成。
+	if item.Type == constants.TypeImage && item.Payload != "" && mode != ReplayModePathPlaceholderPaste {
 		materialized, err := a.ensureImageMaterialized(item)
 		if err != nil {
 			slog.Warn("应用：图片物化失败", "error", err, "item_id", item.ID)
@@ -358,6 +366,12 @@ func (a *Application) replayLazyPlaceholder(item *history.HistoryItem) (ReplayRe
 	if a == nil || a.clip == nil {
 		return ReplayResult{}, ErrClipboardUnavailable
 	}
+	if item == nil || item.Type != constants.TypeImage {
+		return ReplayResult{}, ErrReplayModeNotApplicable
+	}
+	if !imageMaterializedOnDisk(item) && strings.TrimSpace(item.Payload) == "" {
+		return ReplayResult{}, fmt.Errorf("%w: missing image payload", ErrUnsupportedReplayState)
+	}
 	item, err := a.ensureReplayTargetPaths(item)
 	if err != nil {
 		return ReplayResult{}, err
@@ -365,8 +379,17 @@ func (a *Application) replayLazyPlaceholder(item *history.HistoryItem) (ReplayRe
 	if len(item.ReservedPaths) == 0 {
 		return ReplayResult{}, fmt.Errorf("%w: missing reserved paths", ErrUnsupportedReplayState)
 	}
+	if !a.isClipboardWriteAllowed(clipboardWriteReasonReplayPath, &protocol.ClipboardData{
+		Type:    constants.TypeText,
+		Payload: item.ReservedPaths[0],
+	}) {
+		return ReplayResult{}, ErrClipboardUnavailable
+	}
 	if err := appStageClipboardText(a, item.ReservedPaths[0]); err != nil {
 		return ReplayResult{}, err
+	}
+	if !imageMaterializedOnDisk(item) {
+		appStartImageMaterialize(a, item)
 	}
 	attrs := []any{
 		"mode", ReplayModePathPlaceholderPaste,
@@ -382,11 +405,7 @@ func (a *Application) replayLazyPlaceholder(item *history.HistoryItem) (ReplayRe
 		Type:               item.Type,
 		Mode:               ReplayModePathPlaceholderPaste,
 		AutoPasteRequested: true,
-		Message:            "Pasted placeholder path",
-	}
-	a.applyAutoPasteResult(&result)
-	if result.ManualPasteRequired {
-		result.Message = "Placeholder path staged. Press Ctrl+V manually."
+		Message:            "Copied placeholder path to clipboard",
 	}
 
 	switch item.State {
@@ -394,93 +413,45 @@ func (a *Application) replayLazyPlaceholder(item *history.HistoryItem) (ReplayRe
 		if (item.State == history.StateReady || item.State == history.StateReadyToPaste) && !a.history.UpdateState(item.ID, history.StateConsumed) {
 			return ReplayResult{}, ErrReplayStateUpdate
 		}
-		return result, nil
 	case history.StateOffered, history.StateFailed:
 		if err := appRequestFileTransfer(a, item); err != nil {
 			return ReplayResult{}, err
 		}
 		result.Action = replayActionDownloadRequested
-		result.Message = "Pasted placeholder path and started transfer"
-		return result, nil
+		result.Message = "Copied placeholder path to clipboard and started transfer"
 	case history.StateDownloading:
 		result.Action = replayActionDownloadInProgress
-		result.Message = "Pasted placeholder path. Transfer still in progress"
-		return result, nil
+		result.Message = "Copied placeholder path to clipboard. Transfer still in progress"
 	default:
 		return ReplayResult{}, fmt.Errorf("%w: %s", ErrUnsupportedReplayState, item.State)
 	}
+
+	a.applyAutoPasteResult(&result)
+	if result.ManualPasteRequired {
+		switch result.Action {
+		case replayActionDownloadRequested:
+			result.Message = "Placeholder path copied. Transfer started. Press Ctrl+V manually."
+		case replayActionDownloadInProgress:
+			result.Message = "Placeholder path copied. Transfer still in progress. Press Ctrl+V manually."
+		default:
+			result.Message = "Placeholder path staged. Press Ctrl+V manually."
+		}
+	} else {
+		switch result.Action {
+		case replayActionDownloadRequested:
+			result.Message = "Pasted placeholder path and started transfer"
+		case replayActionDownloadInProgress:
+			result.Message = "Pasted placeholder path. Transfer still in progress"
+		default:
+			result.Message = "Pasted placeholder path"
+		}
+	}
+	return result, nil
 }
 
 func (a *Application) replayLazyRealClipboard(item *history.HistoryItem) (ReplayResult, error) {
 	if a == nil || a.clip == nil {
 		return ReplayResult{}, ErrClipboardUnavailable
-	}
-
-	// 自发自收场景：本机既是发送端又是接收端。
-	// 如果 item 没有 LocalPaths（首次触发、未被路径粘贴占位过），则系统剪贴板
-	// 可能仍保持原始内容，直接模拟 Ctrl+V 即可。
-	// 但如果 item 已有 LocalPaths（之前按过 Ctrl+Alt+V 或图片已物化），
-	// 系统剪贴板可能已被路径文本覆盖，需要重新将真实文件写入系统剪贴板。
-	if a.isLocalOriginItem(item) {
-		// 已有落盘文件：重新将真实文件写回系统文件型剪贴板
-		if len(item.LocalPaths) > 0 {
-			slog.Info("应用：replayLazyRealClipboard 自发自收，item 已有本地文件，回写系统剪贴板",
-				"item_id", item.ID, "item_type", item.Type, "local_paths", item.LocalPaths)
-			result, err := a.stageRealClipboardWithAutoPaste(item)
-			if err != nil {
-				return ReplayResult{}, err
-			}
-			if (item.State == history.StateReady || item.State == history.StateReadyToPaste) && !a.history.UpdateState(item.ID, history.StateConsumed) {
-				return ReplayResult{}, ErrReplayStateUpdate
-			}
-			return result, nil
-		}
-
-		// 没有 LocalPaths 但有 ReservedPaths：之前按过 Ctrl+Alt+V，
-		// 系统剪贴板已被路径文本覆盖，需要用原始源路径恢复系统文件型剪贴板。
-		if len(item.ReservedPaths) > 0 && item.Type == constants.TypeFileStub && item.TransferID != "" {
-			if transfer := a.transfers.GetOutgoing(item.TransferID); transfer != nil && len(transfer.SourcePaths) > 0 {
-				slog.Info("应用：replayLazyRealClipboard 自发自收，使用发送端原始路径恢复系统剪贴板",
-					"item_id", item.ID, "source_paths", transfer.SourcePaths)
-				if err := appStageClipboardFiles(a, transfer.SourcePaths); err != nil {
-					return ReplayResult{}, err
-				}
-				if appIsWaylandSession() {
-					appSleep(waylandFileClipboardSettleWait)
-				}
-				result := ReplayResult{
-					Action:             replayActionClipboardStaged,
-					Type:               item.Type,
-					Mode:               ReplayModeSystemClipboardPaste,
-					AutoPasteRequested: true,
-					Message:            "Self-loopback: restored original files to clipboard",
-				}
-				a.applyAutoPasteResult(&result)
-				if result.ManualPasteRequired {
-					result.Message = "Self-loopback: press Ctrl+V manually"
-				}
-				return result, nil
-			}
-		}
-
-		// 没有 LocalPaths 也没有 ReservedPaths：系统剪贴板应仍持有原始内容，直接模拟粘贴
-		slog.Info("应用：replayLazyRealClipboard 自发自收，直接模拟粘贴，不覆盖系统剪贴板",
-			"item_id", item.ID, "item_type", item.Type, "state", item.State)
-
-		result := ReplayResult{
-			Action:             replayActionClipboardStaged,
-			Type:               item.Type,
-			Mode:               ReplayModeSystemClipboardPaste,
-			AutoPasteRequested: true,
-			Message:            "Self-loopback: paste from system clipboard directly",
-		}
-		a.applyAutoPasteResult(&result)
-		if result.ManualPasteRequired {
-			result.Message = "Self-loopback: press Ctrl+V manually"
-		} else {
-			result.Message = "Self-loopback: pasted from system clipboard"
-		}
-		return result, nil
 	}
 
 	item, err := a.ensureReplayTargetPaths(item)
@@ -496,11 +467,11 @@ func (a *Application) replayLazyRealClipboard(item *history.HistoryItem) (Replay
 		if len(item.LocalPaths) == 0 {
 			return ReplayResult{}, fmt.Errorf("%w: missing local paths", ErrUnsupportedReplayState)
 		}
-		result, err := a.stageRealClipboardWithAutoPaste(item)
+		result, err := a.stageRealClipboardContent(item)
 		if err != nil {
 			return ReplayResult{}, err
 		}
-		if (item.State == history.StateReady || item.State == history.StateReadyToPaste) && !a.history.UpdateState(item.ID, history.StateConsumed) {
+		if shouldMarkFileReplayConsumed(item) && !a.history.UpdateState(item.ID, history.StateConsumed) {
 			return ReplayResult{}, ErrReplayStateUpdate
 		}
 		return result, nil
@@ -514,7 +485,7 @@ func (a *Application) replayLazyRealClipboard(item *history.HistoryItem) (Replay
 			Action:  replayActionDownloadRequested,
 			Type:    item.Type,
 			Mode:    ReplayModeSystemClipboardPaste,
-			Message: "Started transfer for real clipboard paste",
+			Message: "Started transfer for real content clipboard copy",
 		}, nil
 	case history.StateDownloading:
 		slog.Info("应用：replayLazyRealClipboard 传输进行中，等待用户重试",
@@ -523,7 +494,7 @@ func (a *Application) replayLazyRealClipboard(item *history.HistoryItem) (Replay
 			Action:  replayActionDownloadInProgress,
 			Type:    item.Type,
 			Mode:    ReplayModeSystemClipboardPaste,
-			Message: "Real clipboard transfer already in progress",
+			Message: "Real content transfer already in progress",
 		}, nil
 	default:
 		slog.Warn("应用：replayLazyRealClipboard 不支持的状态", "state", item.State)
@@ -531,7 +502,7 @@ func (a *Application) replayLazyRealClipboard(item *history.HistoryItem) (Replay
 	}
 }
 
-func (a *Application) stageRealClipboardWithAutoPaste(item *history.HistoryItem) (ReplayResult, error) {
+func (a *Application) stageRealClipboardContent(item *history.HistoryItem) (ReplayResult, error) {
 	appRealClipboardMu.Lock()
 	defer appRealClipboardMu.Unlock()
 
@@ -552,28 +523,50 @@ func (a *Application) stageRealClipboardWithAutoPaste(item *history.HistoryItem)
 	}
 	slog.Info("应用：已写入真实内容到系统剪贴板", attrs...)
 	result := ReplayResult{
-		Action:             replayActionClipboardStaged,
-		Type:               item.Type,
-		Mode:               ReplayModeSystemClipboardPaste,
-		AutoPasteRequested: true,
-		Message:            "Staged real content to clipboard",
+		Action: replayActionClipboardStaged,
+		Type:   item.Type,
+		Mode:   ReplayModeSystemClipboardPaste,
 	}
-	a.applyAutoPasteResult(&result)
-	if result.ManualPasteRequired {
-		result.Message = "Real content staged. Press Ctrl+V manually."
-	} else {
-		result.Message = "Pasted real content"
+	if item != nil && item.Type == constants.TypeImage {
+		result.AutoPasteRequested = true
+		a.applyAutoPasteResult(&result)
+		if result.ManualPasteRequired {
+			result.Message = "Image file copied to clipboard. Press Ctrl+V manually."
+		} else {
+			result.Message = "Pasted real image file"
+		}
+		return result, nil
 	}
+	result.Message = "Copied real content to clipboard"
 	return result, nil
+}
+
+func shouldMarkFileReplayConsumed(item *history.HistoryItem) bool {
+	if item == nil {
+		return false
+	}
+	return item.State == history.StateReady || item.State == history.StateReadyToPaste
 }
 
 func (a *Application) stageHistoryItemRealClipboard(item *history.HistoryItem) error {
 	if item == nil || a == nil || a.clip == nil {
 		return ErrClipboardUnavailable
 	}
-	// 图片按文件同型处理：本地消费时统一回写文件路径，而不是图像二进制。
-	switch {
-	case len(item.LocalPaths) > 0:
+	if !a.isClipboardWriteAllowed(clipboardWriteReasonReplayReal, &protocol.ClipboardData{
+		Type: item.Type,
+	}) {
+		return ErrClipboardUnavailable
+	}
+	switch item.Type {
+	case constants.TypeImage:
+		if len(item.LocalPaths) == 0 {
+			return fmt.Errorf("%w: missing local paths", ErrUnsupportedReplayState)
+		}
+		return appStageClipboardFiles(a, item.LocalPaths[:1])
+	case constants.TypeFileStub:
+		if len(item.LocalPaths) == 0 {
+			return fmt.Errorf("%w: missing local paths", ErrUnsupportedReplayState)
+		}
 		return appStageClipboardFiles(a, item.LocalPaths)
 	default:
 		return fmt.Errorf("%w: missing local paths", ErrUnsupportedReplayState)
@@ -584,7 +577,7 @@ func (a *Application) applyAutoPasteResult(result *ReplayResult) {
 	if result == nil || !result.AutoPasteRequested {
 		return
 	}
-	// 自动粘贴模拟 Ctrl+V 可能导致目标应用回写剪贴板，需要额外抑制一次
+	// 预留的键盘注入辅助逻辑：若未来启用，需要额外抑制一次回写事件。
 	if a.clip != nil {
 		a.clip.AddExtraSuppression()
 	}

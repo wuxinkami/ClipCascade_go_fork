@@ -1,10 +1,8 @@
 package clipboard
 
 import (
-	"bytes"
 	"encoding/base64"
 	"image"
-	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +12,7 @@ import (
 )
 
 func buildClipboardImagePayload(path string) (payload string, filename string, ok bool) {
-	imageBytes, err := clipboardImageBytesFromFile(path)
+	imageBytes, err := clipboardImageFileBytes(path)
 	if err != nil || len(imageBytes) == 0 {
 		return "", "", false
 	}
@@ -30,21 +28,19 @@ func BuildClipboardImagePayload(path string) (payload string, filename string, o
 	return buildClipboardImagePayload(path)
 }
 
-func clipboardImageBytesFromFile(path string) ([]byte, error) {
+func clipboardImageFileBytes(path string) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	img, _, err := image.Decode(file)
-	if err != nil {
+	if _, _, err := image.DecodeConfig(file); err != nil {
 		return nil, err
 	}
+	return os.ReadFile(path)
+}
 
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+func clipboardImageBytesFromFile(path string) ([]byte, error) {
+	return clipboardImageFileBytes(path)
 }

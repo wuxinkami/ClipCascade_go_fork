@@ -12,6 +12,7 @@ import (
 
 	"github.com/clipcascade/desktop/app"
 	"github.com/clipcascade/desktop/config"
+	"github.com/clipcascade/desktop/ui"
 )
 
 func main() {
@@ -28,7 +29,8 @@ func main() {
 	noAutoReconnect := flag.Bool("no-auto-reconnect", false, "禁用自动重连")
 	reconnectDelay := flag.Int("reconnect-delay", 0, "重连延迟 (秒，默认 5)")
 	fileMemoryThresholdMiB := flag.Int64("file-memory-threshold-mib", 0, "文件传输内存归档阈值 (MiB，默认 1024，最大 5120)")
-	webPort := flag.Int("web-port", 0, "控制面板监听端口 (默认 6666)")
+	webPort := flag.Int("web-port", 0, "控制面板监听端口 (默认 16666)")
+	webPassword := flag.String("web-password", "", "控制面板访问密码")
 	saveConfig := flag.Bool("save", false, "将命令行参数保存到配置文件")
 	debugLog := flag.Bool("debug", false, "启用调试日志")
 	flag.Parse()
@@ -38,9 +40,16 @@ func main() {
 	if *debugLog {
 		level = slog.LevelDebug
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: level,
-	})))
+	logCloser, err := setupLogging(level)
+	if err != nil {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: level,
+		})))
+		slog.Warn("failed to initialize file logging", "error", err)
+	} else {
+		defer logCloser.Close()
+	}
+	ui.HideStartupConsoleWindow()
 
 	// 加载 config
 	cfg := config.Load()
@@ -86,6 +95,9 @@ func main() {
 	if *webPort > 0 {
 		cfg.WebPort = *webPort
 	}
+	if *webPassword != "" {
+		cfg.WebPassword = *webPassword
+	}
 
 	// 如果有请求，则保存 config
 	if *saveConfig {
@@ -129,7 +141,8 @@ func main() {
 		fmt.Println("  --auto-reconnect / --no-auto-reconnect  启用/禁用自动重连 (默认启用)")
 		fmt.Println("  --reconnect-delay <sec>         重连延迟秒数 (默认 5)")
 		fmt.Println("  --file-memory-threshold-mib <n> 文件内存阈值 MiB (默认 1024, 最大 5120)")
-		fmt.Println("  --web-port <port>               控制面板端口 (默认 6666)")
+		fmt.Println("  --web-port <port>               控制面板端口 (默认 16666)")
+		fmt.Println("  --web-password <pass>            控制面板访问密码")
 		fmt.Println("  --save                          保存参数到配置文件")
 		fmt.Println("  --debug                         启用调试日志")
 		fmt.Println()

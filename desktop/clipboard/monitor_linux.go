@@ -259,6 +259,27 @@ func setPlatformText(text string) error {
 
 var errNotWayland = errors.New("not wayland or wl-copy unavailable")
 
+func setPlatformImage(data []byte) error {
+	if !isWayland() {
+		return errNotWayland
+	}
+	cmd := execClipboardCommand("wl-copy", "--type", clipboardImageMimeType(data))
+	cmd.Stdin = bytes.NewReader(data)
+	err := cmd.Start()
+	if err == nil {
+		holdWlCopyProcess(cmd)
+		return nil
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		warnWaylandMissingCopyOnce.Do(func() {
+			slog.Warn("剪贴板：未找到 wl-copy，Wayland 图片写入已降级")
+		})
+		return errNotWayland
+	}
+	slog.Warn("剪贴板：wl-copy 图片写入失败", "错误", err)
+	return err
+}
+
 // setPlatformFilePaths 使用 Linux 剪贴板工具写入文件路径。
 func setPlatformFilePaths(paths []string) error {
 	normalized := normalizeClipboardPaths(paths)

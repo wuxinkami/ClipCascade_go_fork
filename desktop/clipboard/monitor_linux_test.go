@@ -132,3 +132,22 @@ func TestHandleNativeClipboardSnapshotBroadcastsWaylandImageChange(t *testing.T)
 		t.Fatalf("capture = %#v, want image/%q", captures[0], second)
 	}
 }
+
+func TestClipboardImageMimeTypeDetectsKnownFormats(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{name: "png", data: []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, want: "image/png"},
+		{name: "jpeg", data: []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F'}, want: "image/jpeg"},
+		{name: "gif", data: []byte("GIF89a"), want: "image/gif"},
+		{name: "unknown", data: []byte("not-an-image"), want: "image/png"},
+	}
+
+	for _, tt := range tests {
+		if got := clipboardImageMimeType(tt.data); got != tt.want {
+			t.Fatalf("%s: clipboardImageMimeType() = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}

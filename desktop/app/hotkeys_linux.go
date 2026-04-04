@@ -41,6 +41,11 @@ type x11Grab struct {
 	modifiers uint16
 }
 
+var (
+	linuxHotkeyIsWaylandEnvironment = isWaylandHotkeyEnvironment
+	linuxHotkeyNewWaylandPortal     = newWaylandPortalHotkeys
+)
+
 func newHotkeyManager() hotkeyManager {
 	return &linuxHotkeyManager{}
 }
@@ -74,21 +79,19 @@ func (m *linuxHotkeyManager) Start(bindings hotkeyBindings) error {
 func (m *linuxHotkeyManager) run(bindings hotkeyBindings, started chan<- error, done chan struct{}) {
 	defer close(done)
 
-	// 注意：Wayland GlobalShortcuts portal 的 BindShortcuts 每次调用都会弹出
-	// 用户确认弹窗（XDG portal 安全模型设计），导致每次启动都需要用户手动确认。
-	// 在 portal 支持静默绑定之前，统一使用 X11 grab（通过 XWayland 兼容 Wayland）。
-	// if isWaylandHotkeyEnvironment() {
-	// 	portal, err := newWaylandPortalHotkeys(bindings)
-	// 	if err == nil {
-	// 		m.mu.Lock()
-	// 		m.portal = portal
-	// 		m.mu.Unlock()
-	// 		started <- nil
-	// 		portal.Run()
-	// 		return
-	// 	}
-	// 	slog.Warn("Wayland GlobalShortcuts portal failed, falling back to X11 grab", "error", err)
-	// }
+	if linuxHotkeyIsWaylandEnvironment() {
+		portal, err := linuxHotkeyNewWaylandPortal(bindings)
+		if err == nil {
+			m.mu.Lock()
+			m.portal = portal
+			m.mu.Unlock()
+			slog.Info("hotkeys: Wayland portal hotkeys registered")
+			started <- nil
+			portal.Run()
+			return
+		}
+		slog.Warn("hotkeys: Wayland portal unavailable, falling back to X11 grab", "error", err)
+	}
 
 	conn, err := xgb.NewConn()
 	if err != nil {
@@ -211,7 +214,7 @@ func (m *linuxHotkeyManager) Stop() error {
 		<-done
 	}
 
-	slog.Info("hotkeys: X11 hotkeys stopped")
+	slog.Info("hotkeys: Linux hotkeys stopped")
 	return nil
 }
 

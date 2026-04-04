@@ -10,8 +10,8 @@ import (
 
 func TestPortalTokenUsesDBusObjectPathSafeCharacters(t *testing.T) {
 	token := portalToken("clipcascade")
-	if !strings.HasPrefix(token, "clipcascade_") {
-		t.Fatalf("token = %q, want clipcascade_ prefix", token)
+	if token != "clipcascade" {
+		t.Fatalf("token = %q, want %q", token, "clipcascade")
 	}
 	if strings.Contains(token, "-") {
 		t.Fatalf("token = %q, should not contain '-'", token)
@@ -22,5 +22,13 @@ func TestPortalTokenUsesDBusObjectPathSafeCharacters(t *testing.T) {
 	}
 	if !matched {
 		t.Fatalf("token = %q, want only letters/digits/underscore", token)
+	}
+}
+
+func TestPortalTokenIsStableForSamePrefix(t *testing.T) {
+	first := portalToken("clipcascade_session")
+	second := portalToken("clipcascade_session")
+	if first != second {
+		t.Fatalf("portalToken() changed between calls: %q vs %q", first, second)
 	}
 }

@@ -17,13 +17,20 @@ type P2PSignaling struct {
 	sessions map[string]map[*websocket.Conn]string // username → {conn → sessionID}
 	// writeLocks 避免同一连接并发写。
 	writeLocks map[*websocket.Conn]*sync.Mutex
+	// readLimitBytes 限制单帧读取大小，防止 websocket 大包绕过 HTTP BodyLimit。
+	readLimitBytes int64
 }
 
 // NewP2PSignaling 创建一个新的 P2P signaling handler。
-func NewP2PSignaling() *P2PSignaling {
+func NewP2PSignaling(readLimitBytes ...int64) *P2PSignaling {
+	limit := defaultWebSocketReadLimitBytes
+	if len(readLimitBytes) > 0 {
+		limit = normalizeWebSocketReadLimitBytes(readLimitBytes[0])
+	}
 	return &P2PSignaling{
-		sessions:   make(map[string]map[*websocket.Conn]string),
-		writeLocks: make(map[*websocket.Conn]*sync.Mutex),
+		sessions:       make(map[string]map[*websocket.Conn]string),
+		writeLocks:     make(map[*websocket.Conn]*sync.Mutex),
+		readLimitBytes: limit,
 	}
 }
 
@@ -45,6 +52,7 @@ func (p *P2PSignaling) HandleP2P(c *websocket.Conn) {
 	}
 
 	sessionID := generateSessionID()
+	applyWebSocketReadLimit(c, p.readLimitBytes)
 
 	// 注册此连接
 	p.mu.Lock()

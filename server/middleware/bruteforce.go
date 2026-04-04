@@ -19,9 +19,9 @@ type BruteForceProtection struct {
 }
 
 type attemptInfo struct {
-	Count     int
-	LockedAt  time.Time
-	LockDur   time.Duration
+	Count    int
+	LockedAt time.Time
+	LockDur  time.Duration
 }
 
 // NewBruteForceProtection 创建一个新的蛮力攻击保护中间件。
@@ -38,19 +38,23 @@ func (bf *BruteForceProtection) Check(c *fiber.Ctx) error {
 
 	bf.mu.Lock()
 	info, exists := bf.attempts[ip]
+	locked := false
+	var remaining time.Duration
+	if exists && !info.LockedAt.IsZero() {
+		remaining = time.Until(info.LockedAt.Add(info.LockDur))
+		if remaining > 0 {
+			locked = true
+		} else {
+			// 锁定过期，重置
+			delete(bf.attempts, ip)
+		}
+	}
 	bf.mu.Unlock()
 
-	if exists && !info.LockedAt.IsZero() {
-		remaining := time.Until(info.LockedAt.Add(info.LockDur))
-		if remaining > 0 {
-			slog.Warn("暴力破解防护：IP 已锁定", "IP", ip, "剩余时间", remaining)
-			return c.Status(fiber.StatusTooManyRequests).SendString(
-				"Too many failed attempts. Retry after " + remaining.Round(time.Second).String())
-		}
-		// 锁定过期，重置
-		bf.mu.Lock()
-		delete(bf.attempts, ip)
-		bf.mu.Unlock()
+	if locked {
+		slog.Warn("暴力破解防护：IP 已锁定", "IP", ip, "剩余时间", remaining)
+		return c.Status(fiber.StatusTooManyRequests).SendString(
+			"Too many failed attempts. Retry after " + remaining.Round(time.Second).String())
 	}
 
 	return c.Next()

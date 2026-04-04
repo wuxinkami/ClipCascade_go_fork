@@ -78,7 +78,8 @@ const (
 	// DefaultPort 是服务器默认监听的端口。
 	DefaultPort = 8080
 	// DefaultWebPort 是桌面客户端控制面板的默认监听端口。
-	DefaultWebPort = 6666
+	// 注意：6666 被 Chrome/Edge 列为不安全端口（ERR_UNSAFE_PORT），故使用 16666。
+	DefaultWebPort = 16666
 	// DefaultMaxMessageSizeMiB 是服务器处理的默认最大消息大小 (单位: MiB)。
 	DefaultMaxMessageSizeMiB = 20
 	// DefaultSessionTimeoutMin 是默认用户会话有效期 (约 1 年)。

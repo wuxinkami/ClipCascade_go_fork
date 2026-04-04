@@ -449,6 +449,21 @@
   </style>
 </head>
 <body>
+  <!-- 控制面板登录层 -->
+  <div id="loginOverlay" class="setup-overlay" style="display:none;">
+    <div class="setup-card">
+      <h2 id="loginTitle"></h2>
+      <div id="loginSub" class="setup-sub"></div>
+      <div class="field">
+        <label id="loginLabelPassword" for="loginPassword"></label>
+        <input id="loginPassword" type="password" autocomplete="current-password">
+      </div>
+      <div class="setup-actions">
+        <button id="loginBtn" class="primary" type="button"></button>
+      </div>
+      <div id="loginStatus" class="setup-status"></div>
+    </div>
+  </div>
   <!-- 首次配置引导层 -->
   <div id="setupOverlay" class="setup-overlay" style="display:none;">
     <div class="setup-card">
@@ -465,6 +480,10 @@
       <div class="field">
         <label id="setupLabelPassword" for="setupPassword"></label>
         <input id="setupPassword" type="password" autocomplete="new-password">
+      </div>
+      <div class="field">
+        <label id="setupLabelWebPassword" for="setupWebPassword"></label>
+        <input id="setupWebPassword" type="password" autocomplete="new-password">
       </div>
       <div class="setup-actions">
         <button id="setupSkipBtn" type="button"></button>
@@ -649,6 +668,7 @@
   <script>
     const basePath = '__BASE_PATH__';
     const needsSetup = __NEEDS_SETUP__;
+    const webPasswordSet = __WEB_PASSWORD_SET__;
 
     // ==================== i18n 字典 ====================
     const i18n = {
@@ -767,6 +787,13 @@
         setupSaving: 'Saving...',
         setupSuccess: 'Connected! Closing setup...',
         setupFailed: 'Failed to save: ',
+        setupLabelWebPassword: 'Control Panel Password (optional)',
+        loginTitle: 'Control Panel Login',
+        loginSub: 'Enter the control panel password to continue.',
+        loginLabelPassword: 'Password',
+        loginBtn: 'Login',
+        loginFailed: 'Invalid password',
+        loginLoading: 'Verifying...',
       },
       zh: {
         pageTitle: 'ClipCascade 控制中心',
@@ -883,6 +910,13 @@
         setupSaving: '保存中...',
         setupSuccess: '已连接！正在关闭引导...',
         setupFailed: '保存失败：',
+        setupLabelWebPassword: '控制面板访问密码（可选）',
+        loginTitle: '控制面板登录',
+        loginSub: '请输入控制面板密码以继续。',
+        loginLabelPassword: '密码',
+        loginBtn: '登录',
+        loginFailed: '密码错误',
+        loginLoading: '验证中...',
       }
     };
 
@@ -1385,6 +1419,7 @@
       setText('setupLabelServer', t('setupLabelServer'));
       setText('setupLabelUsername', t('setupLabelUsername'));
       setText('setupLabelPassword', t('setupLabelPassword'));
+      setText('setupLabelWebPassword', t('setupLabelWebPassword'));
       setText('setupSaveBtn', t('setupSaveBtn'));
       setText('setupSkipBtn', t('setupSkipBtn'));
     }
@@ -1434,6 +1469,19 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
           });
+
+          // 如果设置了控制面板密码，也保存它
+          var webPw = document.getElementById('setupWebPassword').value;
+          if (webPw) {
+            try {
+              await requestJSON(basePath + 'api/set-web-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: webPw })
+              });
+            } catch (e) { /* 忽略，不影响主流程 */ }
+          }
+
           statusEl.className = 'setup-status ok';
           statusEl.textContent = t('setupSuccess');
 
@@ -1470,11 +1518,63 @@
       form.addEventListener('input', function() { settingsDirty = true; });
       refreshTimer = setInterval(load, 3000);
 
+      // Web 密码登录
+      if (webPasswordSet && !needsSetup) {
+        showLoginOverlay();
+      }
       // 首次配置引导
       if (needsSetup) {
         showSetupOverlay();
       }
     });
+
+    // ==================== 登录界面 ====================
+    function applyLoginLang() {
+      setText('loginTitle', t('loginTitle'));
+      setText('loginSub', t('loginSub'));
+      setText('loginLabelPassword', t('loginLabelPassword'));
+      setText('loginBtn', t('loginBtn'));
+    }
+
+    function showLoginOverlay() {
+      var overlay = document.getElementById('loginOverlay');
+      overlay.style.display = 'flex';
+      document.querySelector('main').style.display = 'none';
+      applyLoginLang();
+
+      var loginBtn = document.getElementById('loginBtn');
+      var passwordInput = document.getElementById('loginPassword');
+      var statusEl = document.getElementById('loginStatus');
+
+      async function doLogin() {
+        var password = passwordInput.value;
+        if (!password) return;
+        statusEl.className = 'setup-status';
+        statusEl.textContent = t('loginLoading');
+        loginBtn.disabled = true;
+        try {
+          await requestJSON(basePath + 'api/web-login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: password })
+          });
+          overlay.style.display = 'none';
+          document.querySelector('main').style.display = '';
+          load();
+        } catch (err) {
+          statusEl.className = 'setup-status err';
+          statusEl.textContent = t('loginFailed');
+        } finally {
+          loginBtn.disabled = false;
+        }
+      }
+
+      loginBtn.addEventListener('click', doLogin);
+      passwordInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') doLogin();
+      });
+      passwordInput.focus();
+    }
 
     window.addEventListener('beforeunload', function() {
       if (refreshTimer) clearInterval(refreshTimer);

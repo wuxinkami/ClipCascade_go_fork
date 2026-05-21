@@ -86,15 +86,28 @@ func (m *Manager) CaptureCurrent() *CaptureData {
 	paths, _ := getPlatformFilePaths()
 
 	// 优先使用平台原生方式读取（Wayland 下 wl-paste 比 golang.design/x/clipboard 更可靠）
-	imageData := getPlatformImageData()
-	if len(imageData) == 0 {
-		imageData = clipboard.Read(clipboard.FmtImage)
-	}
-	textData := getPlatformTextData()
-	if len(textData) == 0 {
-		textData = clipboard.Read(clipboard.FmtText)
-	}
+	return captureDataFromPlatform(
+		paths,
+		getPlatformImageData(),
+		getPlatformTextData(),
+		allowClipboardReadFallback(),
+		clipboard.Read,
+	)
+}
 
+func allowClipboardReadFallback() bool {
+	return !(runtime.GOOS == "linux" && isWayland())
+}
+
+func captureDataFromPlatform(paths []string, imageData []byte, textData []byte, allowFallback bool, read func(clipboard.Format) []byte) *CaptureData {
+	if allowFallback && read != nil {
+		if len(imageData) == 0 {
+			imageData = read(clipboard.FmtImage)
+		}
+		if len(textData) == 0 {
+			textData = read(clipboard.FmtText)
+		}
+	}
 	return deriveCaptureData(paths, imageData, textData)
 }
 
@@ -286,20 +299,17 @@ func (m *Manager) handleSystemChange() {
 
 	// 优先使用平台原生方式读取图片（Windows CF_DIB、Linux wl-paste 等），
 	// 避免多次 OpenClipboard/CloseClipboard 竞争。
-	imageData := getPlatformImageData()
-	if len(imageData) == 0 {
-		imageData = clipboard.Read(clipboard.FmtImage)
-	}
-	textData := getPlatformTextData()
-	if len(textData) == 0 {
-		textData = clipboard.Read(clipboard.FmtText)
-	}
-
-	result, ok := selectClipboardContent(paths, imageData, textData, false)
-	if !ok {
+	capture := captureDataFromPlatform(
+		paths,
+		getPlatformImageData(),
+		getPlatformTextData(),
+		allowClipboardReadFallback(),
+		clipboard.Read,
+	)
+	if capture == nil {
 		return
 	}
-	m.handleChange(result)
+	m.handleChange(*capture)
 }
 
 func selectClipboardContent(paths []string, imageData []byte, textData []byte, forceFileStub bool) (CaptureData, bool) {

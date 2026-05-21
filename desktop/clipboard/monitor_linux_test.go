@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/clipcascade/pkg/constants"
+	goclipboard "golang.design/x/clipboard"
 )
 
 func TestSelectWaylandPreferredTypePrefersUtf8PlainText(t *testing.T) {
@@ -30,6 +31,47 @@ func TestSelectWaylandPreferredTypeFallsBackToAvailableImageMime(t *testing.T) {
 	)
 	if got != "image/webp" {
 		t.Fatalf("selectWaylandPreferredType() = %q, want %q", got, "image/webp")
+	}
+}
+
+func TestAllowClipboardReadFallbackDisabledOnWayland(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "wayland-test")
+
+	if allowClipboardReadFallback() {
+		t.Fatal("allowClipboardReadFallback() = true, want false on Wayland")
+	}
+}
+
+func TestCaptureDataFromPlatformSkipsClipboardReadFallbackWhenDisabled(t *testing.T) {
+	called := false
+	capture := captureDataFromPlatform(nil, nil, []byte("hello"), false, func(goclipboard.Format) []byte {
+		called = true
+		return []byte("fallback")
+	})
+
+	if called {
+		t.Fatal("fallback clipboard read should not be called")
+	}
+	if capture == nil || capture.Type != constants.TypeText || capture.Payload != "hello" {
+		t.Fatalf("capture = %#v, want text/hello", capture)
+	}
+}
+
+func TestCaptureDataFromPlatformUsesClipboardReadFallbackWhenAllowed(t *testing.T) {
+	var formats []goclipboard.Format
+	capture := captureDataFromPlatform(nil, nil, nil, true, func(format goclipboard.Format) []byte {
+		formats = append(formats, format)
+		if format == goclipboard.FmtText {
+			return []byte("fallback-text")
+		}
+		return nil
+	})
+
+	if len(formats) != 2 {
+		t.Fatalf("fallback read count = %d, want 2", len(formats))
+	}
+	if capture == nil || capture.Type != constants.TypeText || capture.Payload != "fallback-text" {
+		t.Fatalf("capture = %#v, want text/fallback-text", capture)
 	}
 }
 

@@ -43,17 +43,50 @@ func (a *Application) historyPanelEvents() []historyPanelEvent {
 }
 
 func (a *Application) historyPanelDevices() historyPanelDeviceSnapshot {
-	devices := historyPanelDeviceSnapshot{
-		LocalSessionID: a.appSessionID(),
-	}
+	localSessionID := a.appSessionID()
+	localName := "local"
 	if a == nil {
-		return devices
+		return historyPanelDeviceSnapshot{
+			LocalSessionID: localSessionID,
+			Local: &historyPanelDevice{
+				DeviceName: localName,
+				SessionID:  localSessionID,
+				Local:      true,
+			},
+		}
+	}
+	if a.cfg != nil {
+		if username := strings.TrimSpace(a.cfg.Username); username != "" {
+			localName = username
+		}
+	}
+
+	devices := historyPanelDeviceSnapshot{
+		LocalSessionID: localSessionID,
+		Local: &historyPanelDevice{
+			DeviceName: localName,
+			SessionID:  localSessionID,
+			Local:      true,
+			Ready:      true,
+		},
 	}
 	if a.p2p != nil {
 		snapshot := a.p2p.Snapshot()
 		devices.P2PSessionID = snapshot.AssignedSessionID
 		devices.PeerIDs = snapshot.PeerIDs
 		devices.ReadyPeerIDs = snapshot.ReadyPeerIDs
+		readyPeers := make(map[string]bool, len(snapshot.ReadyPeerIDs))
+		for _, peerID := range snapshot.ReadyPeerIDs {
+			readyPeers[peerID] = true
+		}
+		devices.Peers = make([]historyPanelDevice, 0, len(snapshot.PeerIDs))
+		for _, peerID := range snapshot.PeerIDs {
+			devices.Peers = append(devices.Peers, historyPanelDevice{
+				DeviceName: peerID,
+				SessionID:  peerID,
+				Ready:      readyPeers[peerID],
+			})
+		}
 	}
 	return devices
 }

@@ -349,15 +349,256 @@
       color: var(--muted);
       font-size: 0.82rem;
     }
+    @media (min-width: 1025px) {
+      body {
+        height: 100vh;
+        overflow: hidden;
+      }
+      main {
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        padding: 12px 16px 12px;
+        min-height: 0;
+      }
+      header {
+        margin-bottom: 6px;
+        flex-shrink: 0;
+      }
+      h1 {
+        font-size: 1.6rem !important;
+      }
+      .sub {
+        font-size: 0.85rem !important;
+        margin-top: 2px;
+      }
+      .status {
+        margin: 4px 0 6px !important;
+        min-height: 18px !important;
+        font-size: 0.82rem !important;
+      }
+      .dashboard-grid {
+        margin-bottom: 8px !important;
+        flex-shrink: 0;
+        gap: 10px !important;
+      }
+      .metric-card {
+        padding: 8px 12px !important;
+      }
+      .metric-value {
+        font-size: 1.05rem !important;
+        margin-top: 4px !important;
+      }
+      .metric-sub {
+        margin-top: 4px !important;
+        gap: 3px !important;
+        font-size: 0.8rem !important;
+      }
+      .action-panel {
+        margin-bottom: 8px !important;
+        padding: 8px 12px !important;
+        flex-shrink: 0;
+      }
+      .main-content-layout {
+        display: grid;
+        grid-template-columns: 340px 1fr;
+        gap: 12px;
+        flex: 1;
+        min-height: 0;
+        margin-bottom: 8px;
+      }
+      .left-column {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-height: 0;
+      }
+      .right-column {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-height: 0;
+      }
+      #settingsPanel {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      #settingsPanel .panel-body {
+        flex: 1;
+        overflow-y: auto;
+        padding: 10px 12px;
+      }
+      #settingsForm {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 8px !important;
+      }
+      #devicesPanel {
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        max-height: 180px;
+      }
+      #devicesPanel .panel-body {
+        overflow-y: auto;
+        padding: 10px 12px;
+      }
+      #historyPanel {
+        flex: 1.2;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      #historyPanel .table-wrap {
+        flex: 1;
+        overflow-y: auto;
+        min-height: 0;
+      }
+      .bottom-row {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        min-height: 0;
+      }
+      #fileTasksPanel, #eventLogPanel {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      #fileTasksPanel .table-wrap {
+        flex: 1;
+        overflow-y: auto;
+        min-height: 0;
+      }
+      #eventLogPanel .panel-body {
+        flex: 1;
+        overflow-y: auto;
+        min-height: 0;
+        padding: 10px 12px;
+      }
+      .foot {
+        display: none !important;
+      }
+    }
     @media (max-width: 1024px) {
       .dashboard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .section-grid { grid-template-columns: 1fr; }
+      .main-content-layout { display: flex; flex-direction: column; gap: 14px; }
+      .bottom-row { display: flex; flex-direction: column; gap: 14px; }
     }
     @media (max-width: 640px) {
       main { padding: 18px 12px 28px; }
       h1 { font-size: 1.65rem; }
       .dashboard-grid { grid-template-columns: 1fr; }
       .settings-form, .kv-grid { grid-template-columns: 1fr; }
+    }
+
+    /* Compact UI Tweaks */
+    .panel {
+      border-radius: 12px !important;
+    }
+    .section-head {
+      padding: 8px 12px !important;
+    }
+    .section-head h2 {
+      font-size: 0.88rem !important;
+    }
+    .section-meta {
+      font-size: 0.78rem !important;
+    }
+    .panel-body {
+      padding: 10px 12px !important;
+    }
+    thead th {
+      padding: 6px 10px !important;
+      font-size: 0.78rem !important;
+    }
+    tbody td {
+      padding: 6px 10px !important;
+      font-size: 0.85rem !important;
+    }
+    button {
+      padding: 5px 10px !important;
+      font-size: 0.8rem !important;
+      border-radius: 6px !important;
+    }
+    .field {
+      gap: 3px !important;
+    }
+    .field label {
+      font-size: 0.78rem !important;
+    }
+    .field input {
+      padding: 6px 8px !important;
+      font-size: 0.82rem !important;
+      border-radius: 6px !important;
+    }
+    .field.checkbox {
+      padding-top: 12px !important;
+    }
+    .event-item {
+      padding: 8px 10px !important;
+      border-radius: 8px !important;
+    }
+    .event-head {
+      margin-bottom: 4px !important;
+    }
+    .event-kind {
+      font-size: 0.72rem !important;
+    }
+    .event-time {
+      font-size: 0.72rem !important;
+    }
+    .event-message {
+      font-size: 0.82rem !important;
+    }
+    .kv {
+      padding: 8px 10px !important;
+      border-radius: 8px !important;
+    }
+    .kv-label {
+      font-size: 0.72rem !important;
+    }
+    .kv-value {
+      font-size: 0.85rem !important;
+      margin-top: 2px !important;
+    }
+
+    /* Sleek Pagination Styles */
+    .pagination-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 12px;
+      background: rgba(31, 36, 48, 0.02);
+      border-top: 1px solid var(--line);
+      font-size: 0.78rem;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .pagination-controls {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .pagination-btn {
+      padding: 2px 6px !important;
+      font-size: 0.75rem !important;
+      border-radius: 4px !important;
+      border: 1px solid var(--line-strong) !important;
+      background: #fff !important;
+      cursor: pointer;
+      line-height: 1;
+    }
+    .pagination-btn:hover:not(:disabled) {
+      background: var(--accent-soft) !important;
+      color: var(--accent) !important;
+      border-color: var(--accent) !important;
+    }
+    .pagination-info {
+      font-weight: 600;
+      font-family: monospace;
     }
     .setup-overlay {
       position: fixed;
@@ -543,60 +784,63 @@
       <div id="actionNote" class="action-note"></div>
     </section>
 
-    <section class="section-grid">
-      <section class="panel">
-        <div class="section-head">
-          <h2 id="hSettings"></h2>
-          <div id="settingsMeta" class="section-meta"></div>
-        </div>
-        <div class="panel-body">
-          <form id="settingsForm" class="settings-form">
-            <div class="field">
-              <label id="lServerURL" for="settingsServerURL"></label>
-              <input id="settingsServerURL" type="text" autocomplete="off">
-            </div>
-            <div class="field">
-              <label id="lUsername" for="settingsUsername"></label>
-              <input id="settingsUsername" type="text" autocomplete="username">
-            </div>
-            <div class="field full">
-              <label id="lPassword" for="settingsPassword"></label>
-              <input id="settingsPassword" type="password" autocomplete="current-password">
-            </div>
-            <div class="field">
-              <label id="lStunURL" for="settingsStunURL"></label>
-              <input id="settingsStunURL" type="text" autocomplete="off">
-            </div>
-            <div class="field">
-              <label id="lReconnectDelay" for="settingsReconnectDelay"></label>
-              <input id="settingsReconnectDelay" type="number" min="1" step="1">
-            </div>
-            <div class="field">
-              <label id="lMemoryThreshold" for="settingsMemoryThreshold"></label>
-              <input id="settingsMemoryThreshold" type="number" min="1" step="1">
-            </div>
-            <div class="field checkbox">
-              <input id="settingsE2EE" type="checkbox">
-              <label id="lE2EE" for="settingsE2EE"></label>
-            </div>
-            <div class="field checkbox">
-              <input id="settingsP2P" type="checkbox">
-              <label id="lP2P" for="settingsP2P"></label>
-            </div>
-            <div class="field checkbox">
-              <input id="settingsAutoReconnect" type="checkbox">
-              <label id="lAutoReconnect" for="settingsAutoReconnect"></label>
-            </div>
-          </form>
-          <div class="settings-foot">
-            <div id="settingsHint" class="hint"></div>
-            <button id="settingsSaveButton" class="primary" type="submit" form="settingsForm"></button>
+    <div class="main-content-layout">
+      <!-- Left Column: Settings & Devices -->
+      <div class="left-column">
+        <!-- Settings Panel -->
+        <section class="panel" id="settingsPanel">
+          <div class="section-head">
+            <h2 id="hSettings"></h2>
+            <div id="settingsMeta" class="section-meta"></div>
           </div>
-        </div>
-      </section>
+          <div class="panel-body">
+            <form id="settingsForm" class="settings-form">
+              <div class="field">
+                <label id="lServerURL" for="settingsServerURL"></label>
+                <input id="settingsServerURL" type="text" autocomplete="off">
+              </div>
+              <div class="field">
+                <label id="lUsername" for="settingsUsername"></label>
+                <input id="settingsUsername" type="text" autocomplete="username">
+              </div>
+              <div class="field full">
+                <label id="lPassword" for="settingsPassword"></label>
+                <input id="settingsPassword" type="password" autocomplete="current-password">
+              </div>
+              <div class="field">
+                <label id="lStunURL" for="settingsStunURL"></label>
+                <input id="settingsStunURL" type="text" autocomplete="off">
+              </div>
+              <div class="field">
+                <label id="lReconnectDelay" for="settingsReconnectDelay"></label>
+                <input id="settingsReconnectDelay" type="number" min="1" step="1">
+              </div>
+              <div class="field">
+                <label id="lMemoryThreshold" for="settingsMemoryThreshold"></label>
+                <input id="settingsMemoryThreshold" type="number" min="1" step="1">
+              </div>
+              <div class="field checkbox">
+                <input id="settingsE2EE" type="checkbox">
+                <label id="lE2EE" for="settingsE2EE"></label>
+              </div>
+              <div class="field checkbox">
+                <input id="settingsP2P" type="checkbox">
+                <label id="lP2P" for="settingsP2P"></label>
+              </div>
+              <div class="field checkbox">
+                <input id="settingsAutoReconnect" type="checkbox">
+                <label id="lAutoReconnect" for="settingsAutoReconnect"></label>
+              </div>
+            </form>
+            <div class="settings-foot">
+              <div id="settingsHint" class="hint"></div>
+              <button id="settingsSaveButton" class="primary" type="submit" form="settingsForm"></button>
+            </div>
+          </div>
+        </section>
 
-      <div class="stack">
-        <section class="panel">
+        <!-- Devices Panel -->
+        <section class="panel" id="devicesPanel">
           <div class="section-head">
             <h2 id="hDevices"></h2>
             <div id="deviceMeta" class="section-meta"></div>
@@ -605,63 +849,74 @@
             <div id="devicesGrid" class="kv-grid"></div>
           </div>
         </section>
+      </div>
 
-        <section class="panel">
+      <!-- Right Column: History, File Tasks, and Event Logs -->
+      <div class="right-column">
+        <!-- Clipboard History Panel -->
+        <section class="panel" id="historyPanel">
           <div class="section-head">
-            <h2 id="hEventLog"></h2>
-            <div id="eventMeta" class="section-meta"></div>
+            <h2 id="hHistory"></h2>
+            <div id="listMeta" class="section-meta"></div>
           </div>
-          <div class="panel-body">
-            <ul id="events" class="event-list"></ul>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th id="thContent"></th>
+                  <th id="thType"></th>
+                  <th id="thState"></th>
+                  <th id="thSize"></th>
+                  <th id="thSource"></th>
+                  <th id="thTime"></th>
+                  <th id="thActions"></th>
+                </tr>
+              </thead>
+              <tbody id="items"></tbody>
+            </table>
           </div>
+          <div class="panel-foot pagination-bar" id="historyPagination"></div>
         </section>
-      </div>
-    </section>
 
-    <section class="panel">
-      <div class="section-head">
-        <h2 id="hFileTasksTable"></h2>
-        <div id="fileTaskMeta" class="section-meta"></div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th id="thFtContent"></th>
-              <th id="thFtState"></th>
-              <th id="thFtSize"></th>
-              <th id="thFtProgress"></th>
-              <th id="thFtSource"></th>
-              <th id="thFtUpdated"></th>
-            </tr>
-          </thead>
-          <tbody id="fileTransfers"></tbody>
-        </table>
-      </div>
-    </section>
+        <!-- Bottom Split for File Tasks & Event Logs -->
+        <div class="bottom-row">
+          <!-- File Tasks Panel -->
+          <section class="panel" id="fileTasksPanel">
+            <div class="section-head">
+              <h2 id="hFileTasksTable"></h2>
+              <div id="fileTaskMeta" class="section-meta"></div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th id="thFtContent"></th>
+                    <th id="thFtState"></th>
+                    <th id="thFtSize"></th>
+                    <th id="thFtProgress"></th>
+                    <th id="thFtSource"></th>
+                    <th id="thFtUpdated"></th>
+                  </tr>
+                </thead>
+                <tbody id="fileTransfers"></tbody>
+              </table>
+            </div>
+          </section>
 
-    <section class="panel" style="margin-top: 14px;">
-      <div class="section-head">
-        <h2 id="hHistory"></h2>
-        <div id="listMeta" class="section-meta"></div>
+          <!-- Event Log Panel -->
+          <section class="panel" id="eventLogPanel">
+            <div class="section-head">
+              <h2 id="hEventLog"></h2>
+              <div id="eventMeta" class="section-meta"></div>
+            </div>
+            <div class="panel-body">
+              <ul id="events" class="event-list"></ul>
+            </div>
+            <div class="panel-foot pagination-bar" id="eventsPagination"></div>
+          </section>
+        </div>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th id="thContent"></th>
-              <th id="thType"></th>
-              <th id="thState"></th>
-              <th id="thSize"></th>
-              <th id="thSource"></th>
-              <th id="thTime"></th>
-              <th id="thActions"></th>
-            </tr>
-          </thead>
-          <tbody id="items"></tbody>
-        </table>
-      </div>
-    </section>
+    </div>
 
     <div id="pageFoot" class="foot"></div>
   </main>
@@ -1002,6 +1257,15 @@
     let busy = false;
     let settingsDirty = false;
 
+    // Pagination State
+    let currentHistoryPage = 1;
+    const historyPageSize = 5;
+    let cachedHistoryItems = [];
+
+    let currentEventPage = 1;
+    const eventPageSize = 5;
+    let cachedEvents = [];
+
     function setStatus(message, isError) {
       const node = document.getElementById('status');
       node.textContent = message || '';
@@ -1077,11 +1341,17 @@
         const events = data.events || [];
         renderOverview(data.overview || {}, data.actions || {}, items, fileTransfers, events);
         renderActions(data.actions || {});
-        renderDevices(data.devices || {});
+        renderDevices(data.devices || {}, data.overview || {});
         renderSettings(data.settings || {}, data.actions || {});
         renderFileTransfers(fileTransfers);
-        renderEvents(events);
-        renderHistory(items);
+
+        // Update caches and render
+        cachedHistoryItems = items;
+        renderHistory();
+
+        cachedEvents = events;
+        renderEvents();
+
         const count = items.length;
         const statusText = data.overview && data.overview.connection_status ? data.overview.connection_status : t('disconnected');
         setStatus(statusText + ' \u2022 ' + count + ' ' + t(count === 1 ? 'historyItem' : 'historyItems'), false);
@@ -1120,124 +1390,183 @@
     }
 
     function renderActions(actions) {
-      var root = document.getElementById('actionBar');
-      root.textContent = '';
-      root.appendChild(button(t('btnConnect'), '', function() {
+      const bar = document.getElementById('actionBar');
+      if (!bar) return;
+      bar.textContent = '';
+
+      bar.appendChild(button(t('btnSendCurrent'), 'primary', function() {
+        mutate(endpoints.sendCurrent, null, t('msgSent'));
+      }));
+
+      bar.appendChild(button(t('btnUseShared'), '', function() {
+        mutate(endpoints.replay, { mode: 'clipboard_immediate' }, t('msgSharedSent'));
+      }, !actions.can_use_shared));
+
+      bar.appendChild(button(t('btnPlaceholder'), '', function() {
+        mutate(endpoints.replay, { mode: 'path_placeholder_paste' }, t('msgPlaceholderSent'));
+      }, !actions.can_use_placeholder));
+
+      bar.appendChild(button(t('btnRealContent'), '', function() {
+        mutate(endpoints.replay, { mode: 'system_clipboard_paste' }, t('msgRealSent'));
+      }, !actions.can_use_real));
+
+      bar.appendChild(button(t('btnConnect'), '', function() {
         mutate(endpoints.connect, null, t('msgConnectRequested'));
       }, !actions.can_connect));
-      root.appendChild(button(t('btnDisconnect'), '', function() {
+
+      bar.appendChild(button(t('btnDisconnect'), 'btn-danger', function() {
         mutate(endpoints.disconnect, null, t('msgDisconnectRequested'));
       }, !actions.can_disconnect));
-      root.appendChild(button(t('btnSendCurrent'), '', function() {
-        mutate(endpoints.sendCurrent, null, t('msgSent'));
-      }, !actions.can_send_current));
-      root.appendChild(button(t('btnUseShared'), 'primary', function() {
-        mutate(endpoints.replay, { mode: 'clipboard_immediate' }, t('msgSharedSent'));
-      }, !actions.can_replay_active));
-      root.appendChild(button(t('btnPlaceholder'), '', function() {
-        mutate(endpoints.replay, { mode: 'path_placeholder_paste' }, t('msgPlaceholderSent'));
-      }, !actions.can_replay_active));
-      root.appendChild(button(t('btnRealContent'), '', function() {
-        mutate(endpoints.replay, { mode: 'system_clipboard_paste' }, t('msgRealSent'));
-      }, !actions.can_replay_active));
-      root.appendChild(button(t('btnRefresh'), '', function() { load(); }, false));
 
-      var saveButton = document.getElementById('settingsSaveButton');
-      if (saveButton) {
-        saveButton.disabled = !actions.can_save_settings;
-        saveButton.textContent = t('btnSaveSettings');
-      }
+      bar.appendChild(button(t('btnRefresh'), '', load));
     }
 
-    function renderDevices(devices) {
+    function shortDeviceID(value) {
+      value = String(value || '');
+      if (value.length <= 18) return value;
+      return value.slice(0, 8) + '\u2026' + value.slice(-6);
+    }
+
+    function addDeviceCard(grid, labelText, valueText, titleText) {
+      var card = document.createElement('div');
+      card.className = 'kv';
+      if (titleText) card.title = titleText;
+
+      var label = document.createElement('div');
+      label.className = 'kv-label';
+      label.textContent = labelText;
+      card.appendChild(label);
+
+      var val = document.createElement('div');
+      val.className = 'kv-value';
+      val.textContent = valueText;
+      card.appendChild(val);
+
+      grid.appendChild(card);
+    }
+
+    function renderDevices(devices, overview) {
       var grid = document.getElementById('devicesGrid');
+      if (!grid) return;
       grid.textContent = '';
-      var rows = [
-        { label: t('localSession'), value: textOrDash(devices.local_session_id) },
-        { label: t('p2pSession'), value: textOrDash(devices.p2p_session_id) },
-        { label: t('peers'), value: (devices.peer_ids || []).length ? devices.peer_ids.join(', ') : '\u2014' },
-        { label: t('readyPeersLabel'), value: (devices.ready_peer_ids || []).length ? devices.ready_peer_ids.join(', ') : '\u2014' }
-      ];
-      rows.forEach(function(row) {
-        var wrapper = document.createElement('div');
-        wrapper.className = 'kv';
-        var label = document.createElement('div');
-        label.className = 'kv-label';
-        label.textContent = row.label;
-        var value = document.createElement('div');
-        value.className = 'kv-value';
-        value.textContent = row.value;
-        wrapper.appendChild(label);
-        wrapper.appendChild(value);
-        grid.appendChild(wrapper);
+
+      var count = 0;
+      var local = devices.local || {};
+      var localName = local.device_name || (overview && overview.username) || 'local';
+      var localSessionID = local.session_id || devices.local_session_id || '';
+      var localTitle = localSessionID ? t('localSession') + ': ' + localSessionID : '';
+      if (devices.p2p_session_id) {
+        localTitle = (localTitle ? localTitle + '\n' : '') + t('p2pSession') + ': ' + devices.p2p_session_id;
+      }
+      addDeviceCard(grid, t('localSession'), localName, localTitle);
+      count++;
+
+      var readySet = {};
+      (devices.ready_peer_ids || []).forEach(function(peerID) {
+        readySet[peerID] = true;
       });
-      setText('deviceMeta', ((devices.ready_peer_ids || []).length || 0) + ' ' + t('ready') + ' / ' + ((devices.peer_ids || []).length || 0) + ' ' + t('peers').toLowerCase());
+
+      var peers = Array.isArray(devices.peers) && devices.peers.length > 0
+        ? devices.peers
+        : (devices.peer_ids || []).map(function(peerID) {
+          return { device_name: peerID, session_id: peerID, ready: !!readySet[peerID] };
+        });
+
+      if (peers.length > 0) {
+        peers.forEach(function(peer) {
+          var peerID = peer.session_id || peer.device_name || '';
+          var peerName = peer.device_name && peer.device_name !== peerID ? peer.device_name : shortDeviceID(peerID);
+          var peerTitle = peerID ? peerID : '';
+          if (peer.ready || readySet[peerID]) {
+            peerTitle = (peerTitle ? peerTitle + '\n' : '') + t('ready');
+          }
+          addDeviceCard(grid, t('peers'), peerName || 'peer', peerTitle);
+          count++;
+        });
+      }
+
+      setText('deviceMeta', count + ' ' + t(count === 1 ? 'item' : 'items'));
     }
 
     function renderSettings(settings, actions) {
-      var form = document.getElementById('settingsForm');
-      if (!form) return;
+      if (!actions.can_save_settings) {
+        var btn = document.getElementById('settingsSaveButton');
+        if (btn) btn.disabled = true;
+      }
+      if (settingsDirty) return;
 
-      if (!settingsDirty || form.dataset.initialized !== 'true') {
-        document.getElementById('settingsServerURL').value = settings.server_url || '';
-        document.getElementById('settingsUsername').value = settings.username || '';
-        document.getElementById('settingsPassword').value = '';
-        document.getElementById('settingsStunURL').value = settings.stun_url || '';
-        document.getElementById('settingsReconnectDelay').value = settings.reconnect_delay_sec || 5;
-        document.getElementById('settingsMemoryThreshold').value = settings.file_memory_threshold_mib || 1024;
-        document.getElementById('settingsE2EE').checked = !!settings.e2ee_enabled;
-        document.getElementById('settingsP2P').checked = !!settings.p2p_enabled;
-        document.getElementById('settingsAutoReconnect').checked = !!settings.auto_reconnect;
-        form.dataset.initialized = 'true';
+      var serverEl = document.getElementById('settingsServerURL');
+      if (serverEl) serverEl.value = settings.server_url || '';
+
+      var userEl = document.getElementById('settingsUsername');
+      if (userEl) userEl.value = settings.username || '';
+
+      var stunEl = document.getElementById('settingsStunURL');
+      if (stunEl) stunEl.value = settings.stun_url || '';
+
+      var delayEl = document.getElementById('settingsReconnectDelay');
+      if (delayEl) delayEl.value = settings.reconnect_delay_sec || 5;
+
+      var memEl = document.getElementById('settingsMemoryThreshold');
+      if (memEl) memEl.value = settings.file_memory_threshold_mib || 1024;
+
+      var e2eeEl = document.getElementById('settingsE2EE');
+      if (e2eeEl) e2eeEl.checked = !!settings.e2ee_enabled;
+
+      var p2pEl = document.getElementById('settingsP2P');
+      if (p2pEl) p2pEl.checked = !!settings.p2p_enabled;
+
+      var autoEl = document.getElementById('settingsAutoReconnect');
+      if (autoEl) autoEl.checked = !!settings.auto_reconnect;
+
+      var passInput = document.getElementById('settingsPassword');
+      if (passInput) {
+        passInput.placeholder = settings.password_configured
+          ? t('passwordConfigured') + ' (' + t('placeholderPassword') + ')'
+          : t('passwordNotConfigured');
       }
 
-      var pwStatus = settings.password_configured ? t('passwordConfigured') : t('passwordNotConfigured');
-      setText('settingsMeta', pwStatus);
-      setText('settingsHint', t('settingsPasswordHint') + ' ' + t('settingsSaveEnabled') + ': ' + (actions.can_save_settings ? t('yes') : t('no')));
-      document.getElementById('settingsSaveButton').disabled = !actions.can_save_settings;
+      setText('settingsHint', t('settingsPasswordHint'));
+      setText('settingsMeta', t('hSettings'));
     }
 
     function renderFileTransfers(items) {
       var tbody = document.getElementById('fileTransfers');
+      if (!tbody) return;
       tbody.textContent = '';
       if (!items || items.length === 0) {
-        var row = document.createElement('tr');
+        var empty = document.createElement('tr');
         var cell = document.createElement('td');
         cell.colSpan = 6;
         cell.className = 'empty';
         cell.textContent = t('noFileTransfers');
-        row.appendChild(cell);
-        tbody.appendChild(row);
-        setText('fileTaskMeta', t('transferLifecycle'));
+        empty.appendChild(cell);
+        tbody.appendChild(empty);
+        setText('fileTaskMeta', t('noFileTransfers'));
         return;
       }
 
       items.forEach(function(item) {
         var row = document.createElement('tr');
 
-        var contentCell = document.createElement('td');
-        var main = document.createElement('div');
-        main.className = 'summary-main';
-        main.textContent = item.display_name || item.transfer_id || item.id || 'transfer';
-        contentCell.appendChild(main);
-        var sub = document.createElement('div');
-        sub.className = 'summary-sub';
-        sub.textContent = item.transfer_id || '';
-        contentCell.appendChild(sub);
-        if (item.error_message) {
-          var err = document.createElement('div');
-          err.className = 'summary-error';
-          err.textContent = item.error_message;
-          contentCell.appendChild(err);
-        }
-        row.appendChild(contentCell);
+        var displayCell = document.createElement('td');
+        var mainDiv = document.createElement('div');
+        mainDiv.className = 'summary-main';
+        mainDiv.textContent = item.display_name || item.transfer_id || 'transfer';
+        displayCell.appendChild(mainDiv);
+        row.appendChild(displayCell);
 
         var stateCell = document.createElement('td');
-        var tags2 = document.createElement('div');
-        tags2.className = 'tags';
-        tags2.appendChild(tag(item.state || 'unknown', item.error_message ? 'warn' : ''));
-        if (item.local_path_count) { tags2.appendChild(tag(t('paths') + ' ' + item.local_path_count)); }
-        stateCell.appendChild(tags2);
+        var stateTags = document.createElement('div');
+        stateTags.className = 'tags';
+        var stateTag = tag(item.state || 'unknown');
+        if (item.state === 'error' || item.state === 'cancelled') {
+          stateTag.className = 'tag warn';
+        } else if (item.state === 'consumed' || item.state === 'completed') {
+          stateTag.className = 'tag active';
+        }
+        stateTags.appendChild(stateTag);
+        stateCell.appendChild(stateTags);
         row.appendChild(stateCell);
 
         var sizeCell = document.createElement('td');
@@ -1245,7 +1574,7 @@
         row.appendChild(sizeCell);
 
         var progressCell = document.createElement('td');
-        progressCell.textContent = (item.total_chunks || item.progress_percent) ? ((item.progress_percent || 0) + '%') : '\u2014';
+        progressCell.textContent = item.progress_percentage !== undefined ? item.progress_percentage + '%' : '\u2014';
         row.appendChild(progressCell);
 
         var sourceCell = document.createElement('td');
@@ -1263,18 +1592,40 @@
     }
 
     function renderEvents(events) {
+      if (events !== undefined) {
+        cachedEvents = events;
+      }
+
       var root = document.getElementById('events');
+      if (!root) return;
       root.textContent = '';
-      if (!events || events.length === 0) {
+
+      const totalEvents = cachedEvents.length;
+      const totalPages = Math.ceil(totalEvents / eventPageSize) || 1;
+
+      // Keep page in bound
+      if (currentEventPage > totalPages) {
+        currentEventPage = totalPages;
+      }
+      if (currentEventPage < 1) {
+        currentEventPage = 1;
+      }
+
+      const startIndex = (currentEventPage - 1) * eventPageSize;
+      const endIndex = Math.min(startIndex + eventPageSize, totalEvents);
+      const displayEvents = cachedEvents.slice(startIndex, endIndex);
+
+      if (!displayEvents || displayEvents.length === 0) {
         var item = document.createElement('li');
         item.className = 'empty';
         item.textContent = t('noRecentEvents');
         root.appendChild(item);
         setText('eventMeta', t('recentEvents'));
+        renderEventsPagination(totalPages);
         return;
       }
 
-      events.forEach(function(event) {
+      displayEvents.forEach(function(event) {
         var item = document.createElement('li');
         item.className = 'event-item';
         var head = document.createElement('div');
@@ -1295,13 +1646,83 @@
         root.appendChild(item);
       });
 
-      setText('eventMeta', events.length + ' ' + t(events.length === 1 ? 'recentEvent' : 'recentEventsPlural'));
+      setText('eventMeta', cachedEvents.length + ' ' + t(cachedEvents.length === 1 ? 'recentEvent' : 'recentEventsPlural'));
+      renderEventsPagination(totalPages);
+    }
+
+    function renderEventsPagination(totalPages) {
+      const container = document.getElementById('eventsPagination');
+      if (!container) return;
+      container.textContent = '';
+
+      // Left part: items info
+      const infoSpan = document.createElement('span');
+      const startNum = cachedEvents.length ? (currentEventPage - 1) * eventPageSize + 1 : 0;
+      const endNum = Math.min(currentEventPage * eventPageSize, cachedEvents.length);
+      infoSpan.textContent = startNum + '-' + endNum + ' / ' + cachedEvents.length;
+      container.appendChild(infoSpan);
+
+      // Right part: controls
+      const controls = document.createElement('div');
+      controls.className = 'pagination-controls';
+
+      const prevBtn = document.createElement('button');
+      prevBtn.className = 'pagination-btn';
+      prevBtn.textContent = '‹';
+      prevBtn.disabled = currentEventPage <= 1;
+      prevBtn.onclick = function() {
+        if (currentEventPage > 1) {
+          currentEventPage--;
+          renderEvents();
+        }
+      };
+      controls.appendChild(prevBtn);
+
+      const pageInfo = document.createElement('span');
+      pageInfo.className = 'pagination-info';
+      pageInfo.textContent = currentEventPage + ' / ' + totalPages;
+      controls.appendChild(pageInfo);
+
+      const nextBtn = document.createElement('button');
+      nextBtn.className = 'pagination-btn';
+      nextBtn.textContent = '›';
+      nextBtn.disabled = currentEventPage >= totalPages;
+      nextBtn.onclick = function() {
+        if (currentEventPage < totalPages) {
+          currentEventPage++;
+          renderEvents();
+        }
+      };
+      controls.appendChild(nextBtn);
+
+      container.appendChild(controls);
     }
 
     function renderHistory(items) {
+      if (items !== undefined) {
+        cachedHistoryItems = items;
+      }
+
       var root = document.getElementById('items');
+      if (!root) return;
       root.textContent = '';
-      if (!items.length) {
+
+      const totalItems = cachedHistoryItems.length;
+      const totalPages = Math.ceil(totalItems / historyPageSize) || 1;
+
+      // Keep page in bound
+      if (currentHistoryPage > totalPages) {
+        currentHistoryPage = totalPages;
+      }
+      if (currentHistoryPage < 1) {
+        currentHistoryPage = 1;
+      }
+
+      const startIndex = (currentHistoryPage - 1) * historyPageSize;
+      const endIndex = Math.min(startIndex + historyPageSize, totalItems);
+      const displayItems = cachedHistoryItems.slice(startIndex, endIndex);
+
+      if (!displayItems.length) {
         var empty = document.createElement('tr');
         var cell = document.createElement('td');
         cell.colSpan = 7;
@@ -1309,10 +1730,11 @@
         cell.textContent = t('historyEmpty');
         empty.appendChild(cell);
         root.appendChild(empty);
+        renderHistoryPagination(totalPages);
         return;
       }
 
-      items.forEach(function(item) {
+      displayItems.forEach(function(item) {
         var row = document.createElement('tr');
         if (item.active) row.className = 'active';
 
@@ -1382,6 +1804,56 @@
         row.appendChild(actionsCell);
         root.appendChild(row);
       });
+
+      renderHistoryPagination(totalPages);
+    }
+
+    function renderHistoryPagination(totalPages) {
+      const container = document.getElementById('historyPagination');
+      if (!container) return;
+      container.textContent = '';
+
+      // Left part: items info
+      const infoSpan = document.createElement('span');
+      const startNum = cachedHistoryItems.length ? (currentHistoryPage - 1) * historyPageSize + 1 : 0;
+      const endNum = Math.min(currentHistoryPage * historyPageSize, cachedHistoryItems.length);
+      infoSpan.textContent = startNum + '-' + endNum + ' / ' + cachedHistoryItems.length;
+      container.appendChild(infoSpan);
+
+      // Right part: controls
+      const controls = document.createElement('div');
+      controls.className = 'pagination-controls';
+
+      const prevBtn = document.createElement('button');
+      prevBtn.className = 'pagination-btn';
+      prevBtn.textContent = '‹';
+      prevBtn.disabled = currentHistoryPage <= 1;
+      prevBtn.onclick = function() {
+        if (currentHistoryPage > 1) {
+          currentHistoryPage--;
+          renderHistory();
+        }
+      };
+      controls.appendChild(prevBtn);
+
+      const pageInfo = document.createElement('span');
+      pageInfo.className = 'pagination-info';
+      pageInfo.textContent = currentHistoryPage + ' / ' + totalPages;
+      controls.appendChild(pageInfo);
+
+      const nextBtn = document.createElement('button');
+      nextBtn.className = 'pagination-btn';
+      nextBtn.textContent = '›';
+      nextBtn.disabled = currentHistoryPage >= totalPages;
+      nextBtn.onclick = function() {
+        if (currentHistoryPage < totalPages) {
+          currentHistoryPage++;
+          renderHistory();
+        }
+      };
+      controls.appendChild(nextBtn);
+
+      container.appendChild(controls);
     }
 
     // ==================== 设置保存 ====================

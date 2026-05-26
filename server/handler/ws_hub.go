@@ -101,6 +101,7 @@ func (h *WSHub) broadcastTargets(username string) []wsTarget {
 func (h *WSHub) Broadcast(username string, sender *websocket.Conn, data []byte) {
 	_ = sender
 	targets := h.broadcastTargets(username)
+	slog.Info("WS：广播剪贴板消息", "用户名", username, "目标连接数", len(targets))
 
 	for _, t := range targets {
 		h.totalOutboundMsgs.Add(1)

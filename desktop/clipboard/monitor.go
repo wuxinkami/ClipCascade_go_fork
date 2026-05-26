@@ -151,11 +151,13 @@ func (m *Manager) SetNotifier(fn func(title, message string)) {
 func (m *Manager) Watch(ctx context.Context) {
 	// macOS / Linux: 文本和图片采用事件监听；文件保持 1s 轮询兜底。
 	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+		slog.Info("剪贴板：启动事件监听", "平台", runtime.GOOS, "wayland", runtime.GOOS == "linux" && isWayland())
 		go m.watchEventDriven(ctx)
 		return
 	}
 
 	// 其他平台（Windows）保持原有变更计数轮询策略。
+	slog.Info("剪贴板：启动变更计数轮询", "平台", runtime.GOOS)
 	go m.watchLegacyByChangeCount(ctx)
 }
 

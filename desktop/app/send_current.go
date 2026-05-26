@@ -157,7 +157,7 @@ func (a *Application) sendClipboardDataWithResult(clipData *protocol.ClipboardDa
 
 	if isSingleRouteClipboardType(clipData.Type) {
 		targetSessionID := targetSessionIDForSingleRouteClipboardData(clipData)
-		return appDispatchClipboardBodySingle(
+		result, err := appDispatchClipboardBodySingle(
 			body,
 			func(payload string) int {
 				if a.p2p == nil {
@@ -173,9 +173,13 @@ func (a *Application) sendClipboardDataWithResult(clipData *protocol.ClipboardDa
 				return a.stomp.Send(payload)
 			},
 		)
+		if err == nil {
+			logClipboardDispatchResult(clipData.Type, result)
+		}
+		return result, err
 	}
 
-	return appDispatchClipboardBodyDetailed(
+	result, err := appDispatchClipboardBodyDetailed(
 		body,
 		func() bool { return a.stomp != nil && a.stomp.IsConnected() },
 		func(payload string) error {
@@ -188,6 +192,23 @@ func (a *Application) sendClipboardDataWithResult(clipData *protocol.ClipboardDa
 			return a.p2p.Send(payload)
 		},
 	)
+	if err == nil {
+		logClipboardDispatchResult(clipData.Type, result)
+	}
+	return result, err
+}
+
+func logClipboardDispatchResult(messageType string, result clipboardDispatchResult) {
+	attrs := []any{
+		"类型", messageType,
+		"stomp", result.StompSent,
+		"p2p", result.P2PSent,
+	}
+	if isSingleRouteClipboardType(messageType) {
+		slog.Debug("应用：剪贴板控制消息已发送", attrs...)
+		return
+	}
+	slog.Info("应用：剪贴板更新已发送", attrs...)
 }
 
 func isSingleRouteClipboardType(messageType string) bool {

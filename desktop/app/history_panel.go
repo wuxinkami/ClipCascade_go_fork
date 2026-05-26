@@ -2,8 +2,8 @@ package app
 
 import (
 	"context"
-	_ "embed"
 	"crypto/rand"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -32,19 +32,19 @@ var appOpenHistoryPanel = func(a *Application) {
 }
 
 type historyPanelServer struct {
-	history    *history.Manager
-	replay     func(id string, mode ReplayMode) error
-	send       func() error
-	connect    func()
-	disconnect func()
-	overview   func() historyPanelOverview
-	devices    func() historyPanelDeviceSnapshot
-	settings   func() historyPanelSettings
-	save       func(input historyPanelSettingsInput) (historyPanelSettings, error)
-	transfers  func() []historyPanelFileTransfer
-	events     func() []historyPanelEvent
-	needsSetup func() bool // 判断是否需要首次配置引导
-	webPasswordFn func() string // 返回当前控制面板密码（空=无需登录）
+	history          *history.Manager
+	replay           func(id string, mode ReplayMode) error
+	send             func() error
+	connect          func()
+	disconnect       func()
+	overview         func() historyPanelOverview
+	devices          func() historyPanelDeviceSnapshot
+	settings         func() historyPanelSettings
+	save             func(input historyPanelSettingsInput) (historyPanelSettings, error)
+	transfers        func() []historyPanelFileTransfer
+	events           func() []historyPanelEvent
+	needsSetup       func() bool                 // 判断是否需要首次配置引导
+	webPasswordFn    func() string               // 返回当前控制面板密码（空=无需登录）
 	setWebPasswordFn func(password string) error // 设置/更新控制面板密码
 
 	mu     sync.Mutex
@@ -168,10 +168,10 @@ func (s *historyPanelServer) EnsureStarted(webPort int) (string, error) {
 		return "", fmt.Errorf("generate history panel token: %w", err)
 	}
 
-		// 使用配置的固定端口（默认 16666），如果被占用回退到随机端口
-		if webPort <= 0 || webPort > 65535 {
-			webPort = constants.DefaultWebPort
-		}
+	// 使用配置的固定端口（默认 16666），如果被占用回退到随机端口
+	if webPort <= 0 || webPort > 65535 {
+		webPort = constants.DefaultWebPort
+	}
 	listenAddr := fmt.Sprintf("127.0.0.1:%d", webPort)
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
@@ -832,10 +832,19 @@ type historyPanelActionState struct {
 }
 
 type historyPanelDeviceSnapshot struct {
-	LocalSessionID string   `json:"local_session_id,omitempty"`
-	P2PSessionID   string   `json:"p2p_session_id,omitempty"`
-	PeerIDs        []string `json:"peer_ids"`
-	ReadyPeerIDs   []string `json:"ready_peer_ids"`
+	Local          *historyPanelDevice  `json:"local,omitempty"`
+	Peers          []historyPanelDevice `json:"peers"`
+	LocalSessionID string               `json:"local_session_id,omitempty"`
+	P2PSessionID   string               `json:"p2p_session_id,omitempty"`
+	PeerIDs        []string             `json:"peer_ids"`
+	ReadyPeerIDs   []string             `json:"ready_peer_ids"`
+}
+
+type historyPanelDevice struct {
+	DeviceName string `json:"device_name,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	Local      bool   `json:"local,omitempty"`
+	Ready      bool   `json:"ready,omitempty"`
 }
 
 type historyPanelSettings struct {

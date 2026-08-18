@@ -2,11 +2,18 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"log/slog"
 	"net"
@@ -59,6 +66,15 @@ type Application struct {
 	lastRecvHash string
 	lastRecvTime time.Time
 
+	lastMonitorSendMu   sync.Mutex
+	lastMonitorSendHash string
+	lastMonitorSendTime time.Time
+
+	replayWriteMu      sync.Mutex
+	replayWriteType    string
+	replayWritePayload string
+	replayWriteTime    time.Time
+
 	sharedClipboard sharedClipboardState
 
 	controlEventMu sync.Mutex
@@ -68,11 +84,11 @@ type Application struct {
 	imageMaterializeJobs map[string]*imageMaterializeJob
 }
 
-var appPasteClipboardPayload = func(a *Application, payload string, payloadType string, fileName string) {
+var appPasteClipboardPayload = func(a *Application, payload string, payloadType string, fileName string) error {
 	if a == nil || a.clip == nil {
-		return
+		return ErrClipboardUnavailable
 	}
-	a.clip.Paste(payload, payloadType, fileName)
+	return a.clip.Paste(payload, payloadType, fileName)
 }
 
 type clipboardWriteReason string
@@ -184,7 +200,7 @@ func (a *Application) Run() {
 
 	if err := a.hotkeys.Start(hotkeyBindings{
 		sendCurrentClipboard: a.triggerSendCurrentClipboard,
-		pastePlaceholder:     a.triggerPastePlaceholderHistoryItem,
+		pastePlaceholder:     a.triggerPastePlaceholderHistoryItemFromHotkey,
 		pasteRealContent:     a.triggerPasteRealContentHistoryItem,
 	}); err != nil {
 		slog.Error("hotkey init failed", "error", err)
@@ -573,6 +589,12 @@ func (a *Application) onReceive(body string) {
 
 	action := a.admitReceivedClipboardData(clipData, time.Now())
 	switch action {
+	case receiveActionReuseHistory:
+		slog.Debug("应用：收到本机回环剪贴板更新，已复用现有历史",
+			"类型", clipData.Type,
+			"大小", sizefmt.HumanSizeFromPayload(clipData.Type, clipData.Payload),
+		)
+		return
 	case receiveActionAdmitHistory:
 		attrs := []any{
 			"类型", clipData.Type,
@@ -588,10 +610,13 @@ func (a *Application) onReceive(body string) {
 			}
 		}
 		slog.Info("应用：收到剪贴板更新并已加入历史", attrs...)
-		// 文本和图片都需要在“异机接收”场景立即写入系统剪贴板。
-		// 自发自收场景（来源会话与本机会话一致）只入历史，不二次写回。
+		// 文本和图片在异机接收场景立即写入系统剪贴板，普通 Ctrl+V 仍由系统处理。
+		// Manager 的本地写入抑制负责阻止该更新被剪贴板监控再次广播。
 		if a.shouldWriteReceivedClipboardToSystem(clipData) {
-			appPasteClipboardPayload(a, clipData.Payload, clipData.Type, clipData.FileName)
+			if err := appPasteClipboardPayload(a, clipData.Payload, clipData.Type, clipData.FileName); err != nil {
+				slog.Warn("应用：远端内容写入系统剪贴板失败", "type", clipData.Type, "error", err)
+				ui.Notify("ClipCascade", "Clipboard update failed / 剪贴板更新失败: "+err.Error())
+			}
 		}
 		// 图片临时文件仍按延迟物化：用户按 Ctrl+Alt+V / Ctrl+Alt+Shift+V 时才落盘。
 		// 用户按 Ctrl+Alt+V / Ctrl+Alt+Shift+V 时才物化到 /tmp。
@@ -655,12 +680,19 @@ func (a *Application) writeClipboardPayloadIfAllowed(reason clipboardWriteReason
 		}
 		return false
 	}
-	appPasteClipboardPayload(a, clipData.Payload, clipData.Type, clipData.FileName)
+	if err := appPasteClipboardPayload(a, clipData.Payload, clipData.Type, clipData.FileName); err != nil {
+		slog.Warn("应用：系统剪贴板写入失败", "reason", reason, "type", clipData.Type, "error", err)
+		return false
+	}
 	return true
 }
 
 func (a *Application) handleLocalClipboardCapture(capture *clipboard.CaptureData) {
 	if a == nil || capture == nil {
+		return
+	}
+	if a.shouldSuppressDuplicateMonitorCapture(capture) {
+		slog.Debug("application: duplicate monitor clipboard capture suppressed", "type", capture.Type)
 		return
 	}
 	if err := a.sendCapture(capture); err != nil {
@@ -670,6 +702,69 @@ func (a *Application) handleLocalClipboardCapture(capture *clipboard.CaptureData
 		}
 		slog.Warn("application: auto-send clipboard capture failed", "type", capture.Type, "error", err)
 	}
+}
+
+const monitorClipboardCaptureDedupWindow = 10 * time.Second
+
+func (a *Application) shouldSuppressDuplicateMonitorCapture(capture *clipboard.CaptureData) bool {
+	if a == nil || capture == nil {
+		return false
+	}
+	hash := monitorCaptureDedupHash(capture)
+	now := time.Now()
+
+	a.lastMonitorSendMu.Lock()
+	defer a.lastMonitorSendMu.Unlock()
+	if a.lastMonitorSendHash == hash && now.Sub(a.lastMonitorSendTime) < monitorClipboardCaptureDedupWindow {
+		return true
+	}
+	a.lastMonitorSendHash = hash
+	a.lastMonitorSendTime = now
+	return false
+}
+
+func monitorCaptureDedupHash(capture *clipboard.CaptureData) string {
+	if capture == nil {
+		return ""
+	}
+	if capture.Type == constants.TypeImage {
+		if hash, ok := monitorImagePixelHash(capture.Payload); ok {
+			return hash
+		}
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(capture.Type+"\x00"+capture.Payload)))
+}
+
+func monitorImagePixelHash(payload string) (string, bool) {
+	data, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return "", false
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return "", false
+	}
+	bounds := img.Bounds()
+	hasher := sha256.New()
+	var buf [8]byte
+	binary.LittleEndian.PutUint32(buf[0:4], uint32(bounds.Dx()))
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(bounds.Dy()))
+	_, _ = hasher.Write([]byte(constants.TypeImage))
+	_, _ = hasher.Write(buf[:])
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, a := img.At(x, y).RGBA()
+			binary.LittleEndian.PutUint32(buf[0:4], uint32(r))
+			_, _ = hasher.Write(buf[0:4])
+			binary.LittleEndian.PutUint32(buf[0:4], uint32(g))
+			_, _ = hasher.Write(buf[0:4])
+			binary.LittleEndian.PutUint32(buf[0:4], uint32(b))
+			_, _ = hasher.Write(buf[0:4])
+			binary.LittleEndian.PutUint32(buf[0:4], uint32(a))
+			_, _ = hasher.Write(buf[0:4])
+		}
+	}
+	return fmt.Sprintf("%x", hasher.Sum(nil)), true
 }
 
 // monitorConnection 检查连接健康状况并触发重连。

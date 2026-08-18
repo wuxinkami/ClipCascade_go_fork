@@ -110,6 +110,42 @@ func TestTriggerPasteRealContentHistoryItemInvokesReplayAction(t *testing.T) {
 	}
 }
 
+func TestTriggerPastePlaceholderHistoryItemUsesClipboardOnlyReplay(t *testing.T) {
+	app := &Application{}
+
+	origReplay := appReplaySharedClipboardItem
+	appReplaySharedClipboardItem = func(a *Application, mode ReplayMode) (ReplayResult, error) {
+		if a != app {
+			t.Fatalf("got application %p, want %p", a, app)
+		}
+		if mode != ReplayModePathPlaceholderPaste {
+			t.Fatalf("mode = %q, want %q", mode, ReplayModePathPlaceholderPaste)
+		}
+		return ReplayResult{Action: replayActionClipboardStaged}, nil
+	}
+	t.Cleanup(func() { appReplaySharedClipboardItem = origReplay })
+
+	app.triggerPastePlaceholderHistoryItem()
+}
+
+func TestTriggerPastePlaceholderHistoryItemFromHotkeyUsesSameClipboardReplay(t *testing.T) {
+	app := &Application{}
+
+	origReplay := appReplaySharedClipboardItem
+	appReplaySharedClipboardItem = func(a *Application, mode ReplayMode) (ReplayResult, error) {
+		if a != app {
+			t.Fatalf("got application %p, want %p", a, app)
+		}
+		if mode != ReplayModePathPlaceholderPaste {
+			t.Fatalf("mode = %q, want %q", mode, ReplayModePathPlaceholderPaste)
+		}
+		return ReplayResult{Action: replayActionClipboardStaged}, nil
+	}
+	t.Cleanup(func() { appReplaySharedClipboardItem = origReplay })
+
+	app.triggerPastePlaceholderHistoryItemFromHotkey()
+}
+
 func TestTriggerReplayActiveHistoryItemNotifiesDownloadStarted(t *testing.T) {
 	app := &Application{}
 	notified := false
@@ -131,6 +167,33 @@ func TestTriggerReplayActiveHistoryItemNotifiesDownloadStarted(t *testing.T) {
 	// 热键触发不再发通知，通知只在文件传输最终完成时发出
 	if notified {
 		t.Fatal("should not notify on replay trigger")
+	}
+}
+
+func TestTriggerReplayWithModeFailureNotifies(t *testing.T) {
+	app := &Application{}
+	wantErr := errors.New("stage clipboard failed")
+	var gotMessage string
+
+	origNotify := notifyFn
+	notifyFn = func(title, message string) {
+		gotMessage = message
+	}
+	t.Cleanup(func() { notifyFn = origNotify })
+
+	origReplay := appReplaySharedClipboardItem
+	appReplaySharedClipboardItem = func(a *Application, mode ReplayMode) (ReplayResult, error) {
+		return ReplayResult{}, wantErr
+	}
+	t.Cleanup(func() { appReplaySharedClipboardItem = origReplay })
+
+	app.triggerPastePlaceholderHistoryItem()
+
+	if gotMessage == "" {
+		t.Fatal("expected failure notification")
+	}
+	if gotMessage != "Clipboard action failed: "+wantErr.Error() {
+		t.Fatalf("notification = %q, want failure detail", gotMessage)
 	}
 }
 

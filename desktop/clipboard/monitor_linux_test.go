@@ -105,6 +105,42 @@ func TestHandleNativeClipboardSnapshotSeedOnlyDoesNotBroadcast(t *testing.T) {
 	}
 }
 
+func TestSeedNativeClipboardSnapshotWaitsUntilCurrentClipboardIsReadable(t *testing.T) {
+	manager := NewManager()
+	var captures []*CaptureData
+	manager.OnCopy(func(capture *CaptureData) {
+		captures = append(captures, capture)
+	})
+
+	snapshots := []*CaptureData{
+		nil,
+		{Type: constants.TypeImage, Payload: base64.StdEncoding.EncodeToString([]byte("existing-image"))},
+	}
+	index := 0
+	orig := monitorCaptureCurrent
+	monitorCaptureCurrent = func(m *Manager) *CaptureData {
+		if index >= len(snapshots) {
+			return snapshots[len(snapshots)-1]
+		}
+		capture := snapshots[index]
+		index++
+		return capture
+	}
+	t.Cleanup(func() { monitorCaptureCurrent = orig })
+
+	if manager.seedNativeClipboardSnapshot() {
+		t.Fatal("seedNativeClipboardSnapshot() = true for unreadable clipboard, want false")
+	}
+	if !manager.seedNativeClipboardSnapshot() {
+		t.Fatal("seedNativeClipboardSnapshot() = false once clipboard is readable, want true")
+	}
+	manager.handleNativeClipboardSnapshot(false)
+
+	if len(captures) != 0 {
+		t.Fatalf("len(captures) = %d, want 0 for startup clipboard baseline", len(captures))
+	}
+}
+
 func TestHandleNativeClipboardSnapshotBroadcastsWaylandTextChange(t *testing.T) {
 	manager := NewManager()
 	var captures []*CaptureData

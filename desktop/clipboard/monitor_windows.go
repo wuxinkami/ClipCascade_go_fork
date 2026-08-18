@@ -35,7 +35,9 @@ var (
 )
 
 const (
-	CF_HDROP = 15
+	CF_HDROP        = 15
+	cfUnicodeText   = 13
+	windowsMaxAlloc = uintptr(^uint(0) >> 1)
 
 	gmemMoveable = 0x0002
 	gmemZeroInit = 0x0040
@@ -137,27 +139,29 @@ func getPlatformImageData() []byte {
 	}
 	raw := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), int(rawSize))
 
-	totalSize, pixelOffset, ok := windowsDIBLayout(raw)
-	if !ok {
+	pngData, err := windowsDIBToPNG(raw)
+	if err != nil {
+		slog.Warn("剪贴板：Windows CF_DIB 转换 PNG 失败", "错误", err)
 		return nil
 	}
-	data := append([]byte(nil), raw[:totalSize]...)
+	return pngData
+}
 
-	// 构建完整的 BMP 文件（添加 BITMAPFILEHEADER）
-	fileHeaderSize := 14
+func windowsDIBToPNG(raw []byte) ([]byte, error) {
+	totalSize, pixelOffset, ok := windowsDIBLayout(raw)
+	if !ok {
+		return nil, errors.New("invalid Windows CF_DIB payload")
+	}
+
+	const fileHeaderSize = 14
 	bmpSize := fileHeaderSize + totalSize
 	bmp := make([]byte, bmpSize)
-	// BM 签名
 	bmp[0] = 'B'
 	bmp[1] = 'M'
-	// 文件大小
 	binary.LittleEndian.PutUint32(bmp[2:6], uint32(bmpSize))
-	// 像素数据偏移
 	binary.LittleEndian.PutUint32(bmp[10:14], pixelOffset)
-	// 复制 DIB 数据
-	copy(bmp[fileHeaderSize:], data)
-
-	return bmp
+	copy(bmp[fileHeaderSize:], raw[:totalSize])
+	return normalizeClipboardImagePNG(bmp)
 }
 
 // getPlatformTextData Windows 直接使用 golang.design/x/clipboard
@@ -166,8 +170,9 @@ func getPlatformTextData() []byte { return nil }
 // isWayland Windows 平台不存在 Wayland，始终返回 false。
 func isWayland() bool { return false }
 
-// setPlatformText Windows 平台不需要特殊处理，返回降级错误。
-func setPlatformText(_ string) error { return errNotWayland }
+func setPlatformText(text string) error {
+	return setWindowsUnicodeText(text)
+}
 
 func setPlatformImage(_ []byte) error { return errNotWayland }
 
@@ -210,6 +215,33 @@ func setWindowsFileDropList(paths []string) error {
 	if err := setPreferredDropEffect(dropEffectCopy); err != nil {
 		slog.Warn("剪贴板：设置 Preferred DropEffect 失败", "错误", err)
 	}
+	return nil
+}
+
+func setWindowsUnicodeText(text string) error {
+	if err := openClipboardWithRetry(); err != nil {
+		return err
+	}
+	defer procCloseClipboard.Call()
+
+	handle, err := newUnicodeTextHandle(text)
+	if err != nil {
+		return err
+	}
+	ownedByClipboard := false
+	defer func() {
+		if !ownedByClipboard {
+			procGlobalFree.Call(handle)
+		}
+	}()
+
+	if r, _, callErr := procEmptyClipboard.Call(); r == 0 {
+		return fmt.Errorf("EmptyClipboard: %w", callErr)
+	}
+	if r, _, callErr := procSetClipboardData.Call(cfUnicodeText, handle); r == 0 {
+		return fmt.Errorf("SetClipboardData(CF_UNICODETEXT): %w", callErr)
+	}
+	ownedByClipboard = true
 	return nil
 }
 
@@ -329,6 +361,31 @@ func newDropFilesHandle(paths []string) (uintptr, error) {
 		dst := unsafe.Slice((*uint16)(unsafe.Pointer(ptr+uintptr(header.PFiles))), len(utf16Paths))
 		copy(dst, utf16Paths)
 	}
+	procGlobalUnlock.Call(handle)
+	return handle, nil
+}
+
+func newUnicodeTextHandle(text string) (uintptr, error) {
+	encoded, err := windows.UTF16FromString(text)
+	if err != nil {
+		return 0, err
+	}
+	totalBytes := uintptr(len(encoded)) * unsafe.Sizeof(uint16(0))
+	if totalBytes == 0 || totalBytes > windowsMaxAlloc {
+		return 0, fmt.Errorf("unicode text allocation size invalid: %d", totalBytes)
+	}
+	handle, _, callErr := procGlobalAlloc.Call(gmemMoveable|gmemZeroInit, totalBytes)
+	if handle == 0 {
+		return 0, fmt.Errorf("GlobalAlloc CF_UNICODETEXT: %w", callErr)
+	}
+
+	ptr, _, _ := procGlobalLock.Call(handle)
+	if ptr == 0 {
+		procGlobalFree.Call(handle)
+		return 0, fmt.Errorf("GlobalLock CF_UNICODETEXT failed")
+	}
+	dst := unsafe.Slice((*uint16)(unsafe.Pointer(ptr)), len(encoded))
+	copy(dst, encoded)
 	procGlobalUnlock.Call(handle)
 	return handle, nil
 }

@@ -14,6 +14,7 @@ type receiveAction int
 const (
 	receiveActionIgnore receiveAction = iota
 	receiveActionAdmitHistory
+	receiveActionReuseHistory
 	receiveActionLegacyPaste
 )
 
@@ -96,7 +97,7 @@ func (a *Application) admitReceivedClipboardData(clipData *protocol.ClipboardDat
 		return receiveActionIgnore
 	}
 	if a.reuseLocalEchoHistoryItem(decision.item) {
-		return receiveActionAdmitHistory
+		return receiveActionReuseHistory
 	}
 
 	// 对于已存在的 TransferID（含自发自收场景），复用现有 history item，
@@ -152,7 +153,7 @@ func (a *Application) reuseLocalEchoHistoryItem(item *history.HistoryItem) bool 
 	if a == nil || a.history == nil || item == nil {
 		return false
 	}
-	if item.Type == constants.TypeFileStub || !a.isLocalOriginItem(item) {
+	if item.Type == constants.TypeFileStub {
 		return false
 	}
 
@@ -162,8 +163,10 @@ func (a *Application) reuseLocalEchoHistoryItem(item *history.HistoryItem) bool 
 		}
 		if existing.Type != item.Type ||
 			existing.Payload != item.Payload ||
-			existing.FileName != item.FileName ||
-			existing.SourceSessionID != item.SourceSessionID {
+			existing.FileName != item.FileName {
+			continue
+		}
+		if !a.isSameLocalEcho(existing, item) {
 			continue
 		}
 		a.setSharedClipboardHistoryItem(existing.ID)
@@ -173,4 +176,25 @@ func (a *Application) reuseLocalEchoHistoryItem(item *history.HistoryItem) bool 
 		return true
 	}
 	return false
+}
+
+func (a *Application) isSameLocalEcho(existing *history.HistoryItem, incoming *history.HistoryItem) bool {
+	if a == nil || existing == nil || incoming == nil {
+		return false
+	}
+	if a.isLocalOriginItem(incoming) {
+		if incoming.SourceSessionID == "" || existing.SourceSessionID == "" {
+			return true
+		}
+		return incoming.SourceSessionID == existing.SourceSessionID
+	}
+	if !a.isLocalOriginItem(existing) {
+		return false
+	}
+	// 兼容旧消息或加密封装丢失来源字段的自发自收回环：server 回广播通常在毫秒级返回。
+	// 加一个短窗口，避免很久以后另一台机器复制相同内容被错误合并。
+	if incoming.CreatedAt.IsZero() || existing.CreatedAt.IsZero() {
+		return false
+	}
+	return incoming.CreatedAt.Sub(existing.CreatedAt) >= 0 && incoming.CreatedAt.Sub(existing.CreatedAt) <= 2*time.Second
 }

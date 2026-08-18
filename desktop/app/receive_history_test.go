@@ -515,8 +515,8 @@ func TestApplicationAdmitReceivedClipboardDataReusesExistingLocalTextHistory(t *
 	originalID := items[0].ID
 
 	action := app.admitReceivedClipboardData(clipData, time.Now())
-	if action != receiveActionAdmitHistory {
-		t.Fatalf("action = %v, want %v", action, receiveActionAdmitHistory)
+	if action != receiveActionReuseHistory {
+		t.Fatalf("action = %v, want %v", action, receiveActionReuseHistory)
 	}
 
 	items = app.history.List()
@@ -525,6 +525,83 @@ func TestApplicationAdmitReceivedClipboardDataReusesExistingLocalTextHistory(t *
 	}
 	if items[0].ID != originalID {
 		t.Fatalf("history item id = %q, want %q", items[0].ID, originalID)
+	}
+}
+
+func TestApplicationAdmitReceivedClipboardDataReusesRecentLocalImageEchoWithoutSourceSession(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		cfg:       &config.Config{Username: "desktop-a"},
+		history:   history.NewManager(10),
+		transfers: newTransferManager("session-local"),
+	}
+	outgoing := &protocol.ClipboardData{
+		Type:            constants.TypeImage,
+		Payload:         "image-payload",
+		SourceSessionID: "session-local",
+	}
+
+	app.recordOutgoingClipboardHistory(outgoing)
+	items := app.history.List()
+	if len(items) != 1 {
+		t.Fatalf("len(items) before echo = %d, want 1", len(items))
+	}
+	originalID := items[0].ID
+
+	action := app.admitReceivedClipboardData(&protocol.ClipboardData{
+		Type:    constants.TypeImage,
+		Payload: "image-payload",
+	}, time.Now())
+	if action != receiveActionReuseHistory {
+		t.Fatalf("action = %v, want %v", action, receiveActionReuseHistory)
+	}
+
+	items = app.history.List()
+	if len(items) != 1 {
+		t.Fatalf("len(items) after echo = %d, want 1", len(items))
+	}
+	if items[0].ID != originalID {
+		t.Fatalf("history item id = %q, want %q", items[0].ID, originalID)
+	}
+}
+
+func TestApplicationAdmitReceivedClipboardDataDoesNotReuseOldLocalImageAsRemoteCopy(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		cfg:       &config.Config{Username: "desktop-a"},
+		history:   history.NewManager(10),
+		transfers: newTransferManager("session-local"),
+	}
+	outgoing := &protocol.ClipboardData{
+		Type:            constants.TypeImage,
+		Payload:         "image-payload",
+		SourceSessionID: "session-local",
+	}
+
+	app.recordOutgoingClipboardHistory(outgoing)
+	items := app.history.List()
+	if len(items) != 1 {
+		t.Fatalf("len(items) before remote copy = %d, want 1", len(items))
+	}
+	_, err := app.history.Mutate(items[0].ID, func(item *history.HistoryItem) error {
+		item.CreatedAt = time.Now().Add(-3 * time.Second)
+		item.UpdatedAt = item.CreatedAt
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Mutate() error = %v", err)
+	}
+
+	action := app.admitReceivedClipboardData(&protocol.ClipboardData{
+		Type:    constants.TypeImage,
+		Payload: "image-payload",
+	}, time.Now())
+	if action != receiveActionAdmitHistory {
+		t.Fatalf("action = %v, want %v", action, receiveActionAdmitHistory)
+	}
+
+	if items := app.history.List(); len(items) != 2 {
+		t.Fatalf("len(items) after remote copy = %d, want 2", len(items))
 	}
 }
 
@@ -554,7 +631,7 @@ func TestApplicationAdmitReceivedClipboardDataDoesNotAddLegacyOrUnknownTypes(t *
 	}
 }
 
-func TestShouldWriteReceivedClipboardToSystemDistinguishesSelfAndRemote(t *testing.T) {
+func TestShouldWriteReceivedClipboardToSystemAllowsRemoteTextAndImage(t *testing.T) {
 	app := &Application{
 		sessionID: "session-local",
 		clip:      &clipboard.Manager{},
@@ -568,6 +645,15 @@ func TestShouldWriteReceivedClipboardToSystemDistinguishesSelfAndRemote(t *testi
 	}
 	if app.shouldWriteReceivedClipboardToSystem(selfText) {
 		t.Fatal("self text should not be written to system clipboard")
+	}
+
+	remoteText := &protocol.ClipboardData{
+		Type:            constants.TypeText,
+		Payload:         "remote",
+		SourceSessionID: "session-remote",
+	}
+	if !app.shouldWriteReceivedClipboardToSystem(remoteText) {
+		t.Fatal("remote text should be written to system clipboard")
 	}
 
 	remoteImage := &protocol.ClipboardData{
@@ -588,7 +674,7 @@ func TestShouldWriteReceivedClipboardToSystemDistinguishesSelfAndRemote(t *testi
 	}
 }
 
-func TestOnReceiveSkipsSelfTextWritebackAndWritesRemoteImageImmediately(t *testing.T) {
+func TestOnReceiveWritesRemoteImageToSystemClipboard(t *testing.T) {
 	app := &Application{
 		sessionID: "session-local",
 		cfg:       &config.Config{},
@@ -599,8 +685,9 @@ func TestOnReceiveSkipsSelfTextWritebackAndWritesRemoteImageImmediately(t *testi
 
 	var pasted []string
 	origPaste := appPasteClipboardPayload
-	appPasteClipboardPayload = func(a *Application, payload string, payloadType string, fileName string) {
+	appPasteClipboardPayload = func(a *Application, payload string, payloadType string, fileName string) error {
 		pasted = append(pasted, payloadType+":"+payload)
+		return nil
 	}
 	t.Cleanup(func() { appPasteClipboardPayload = origPaste })
 
@@ -626,10 +713,55 @@ func TestOnReceiveSkipsSelfTextWritebackAndWritesRemoteImageImmediately(t *testi
 		t.Fatalf("Encode(remoteImage) error = %v", err)
 	}
 	app.onReceive(string(remoteImageBody))
-	if len(pasted) != 1 {
-		t.Fatalf("len(pasted) = %d, want 1", len(pasted))
+	if len(pasted) != 1 || pasted[0] != constants.TypeImage+":remote-image" {
+		t.Fatalf("pasted = %#v, want remote image written to system clipboard", pasted)
 	}
-	if pasted[0] != constants.TypeImage+":remote-image" {
-		t.Fatalf("pasted[0] = %q, want %q", pasted[0], constants.TypeImage+":remote-image")
+}
+
+func TestOnReceiveSelfImageEchoWithoutSourceSessionReusesOutgoingHistory(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		cfg:       &config.Config{Username: "desktop-a"},
+		history:   history.NewManager(10),
+		clip:      &clipboard.Manager{},
+		transfers: newTransferManager("session-local"),
+	}
+	app.recordOutgoingClipboardHistory(&protocol.ClipboardData{
+		Type:            constants.TypeImage,
+		Payload:         "image-payload",
+		SourceSessionID: "session-local",
+	})
+	original := app.history.List()
+	if len(original) != 1 {
+		t.Fatalf("len(original) = %d, want 1", len(original))
+	}
+
+	var pasted []string
+	origPaste := appPasteClipboardPayload
+	appPasteClipboardPayload = func(a *Application, payload string, payloadType string, fileName string) error {
+		pasted = append(pasted, payloadType+":"+payload)
+		return nil
+	}
+	t.Cleanup(func() { appPasteClipboardPayload = origPaste })
+
+	body, err := (&protocol.ClipboardData{
+		Type:    constants.TypeImage,
+		Payload: "image-payload",
+	}).Encode()
+	if err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+
+	app.onReceive(string(body))
+
+	items := app.history.List()
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+	if items[0].ID != original[0].ID {
+		t.Fatalf("history ID = %q, want %q", items[0].ID, original[0].ID)
+	}
+	if len(pasted) != 0 {
+		t.Fatalf("pasted = %#v, want empty", pasted)
 	}
 }

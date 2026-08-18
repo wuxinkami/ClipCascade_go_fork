@@ -102,7 +102,7 @@ build_desktop() {
     if [[ "$GOOS" == "darwin" ]]; then
         echo ""
         info "💡 macOS 使用提示:"
-        info "   首次运行需要授权辅助功能权限（用于全局热键和自动粘贴）"
+        info "   首次运行可能需要授权辅助功能权限（用于全局热键）"
         info "   系统偏好设置 → 隐私与安全性 → 辅助功能 → 添加终端/iTerm2"
         echo ""
         info "   启动方式:"

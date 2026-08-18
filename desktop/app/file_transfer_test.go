@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/clipcascade/desktop/clipboard"
 	"github.com/clipcascade/desktop/config"
 	"github.com/clipcascade/desktop/history"
 	"github.com/clipcascade/pkg/constants"
@@ -945,9 +946,10 @@ func TestHandleFileChunkAndCompleteSingleFolderPreservesOriginalFolderName(t *te
 	}
 }
 
-func TestHandleFileCompleteClearsPendingReplayModeAndWaitsForExplicitReplay(t *testing.T) {
+func TestHandleFileCompleteCompletesPendingRealClipboardReplay(t *testing.T) {
 	app := &Application{
 		sessionID: "session-local",
+		clip:      &clipboard.Manager{},
 		history:   history.NewManager(10),
 		transfers: newTransferManager("session-local"),
 	}
@@ -985,6 +987,16 @@ func TestHandleFileCompleteClearsPendingReplayModeAndWaitsForExplicitReplay(t *t
 	}
 	app.transfers.RegisterIncoming(manifest, item.ID, item.LastChunkIdx)
 
+	var stagedPaths []string
+	origStageFiles := appStageClipboardFiles
+	appStageClipboardFiles = func(a *Application, paths []string) error {
+		stagedPaths = append([]string(nil), paths...)
+		return nil
+	}
+	t.Cleanup(func() {
+		appStageClipboardFiles = origStageFiles
+	})
+
 	raw := []byte("hello raw world")
 	rawSum := sha256.Sum256(raw)
 	if err := app.handleFileChunk(&protocol.FileChunk{
@@ -1012,15 +1024,17 @@ func TestHandleFileCompleteClearsPendingReplayModeAndWaitsForExplicitReplay(t *t
 	if stored == nil {
 		t.Fatal("history item not found")
 	}
-	if stored.State != history.StateReadyToPaste {
-		t.Fatalf("state = %q, want %q", stored.State, history.StateReadyToPaste)
+	if stored.State != history.StateConsumed {
+		t.Fatalf("state = %q, want %q", stored.State, history.StateConsumed)
 	}
-	// 传输完成后禁止自动真实粘贴，pending 标记应被清零，等待用户再次热键触发。
 	if stored.PendingReplayMode != string(ReplayModeNone) {
 		t.Fatalf("PendingReplayMode = %q, want %q", stored.PendingReplayMode, ReplayModeNone)
 	}
 	if len(stored.LocalPaths) != 1 || stored.LocalPaths[0] != reservedPath {
 		t.Fatalf("LocalPaths = %#v, want [%q]", stored.LocalPaths, reservedPath)
+	}
+	if len(stagedPaths) != 1 || stagedPaths[0] != reservedPath {
+		t.Fatalf("stagedPaths = %#v, want [%q]", stagedPaths, reservedPath)
 	}
 }
 

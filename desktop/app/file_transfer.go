@@ -1427,8 +1427,6 @@ func (a *Application) handleFileComplete(complete *protocol.FileComplete) error 
 		if len(item.ReservedPaths) == 0 {
 			item.ReservedPaths = append([]string(nil), localPaths...)
 		}
-		// 文件完成后只进入 ready_to_paste，禁止隐式自动真实粘贴。
-		item.PendingReplayMode = string(ReplayModeNone)
 		item.LastChunkIdx = transfer.LastChunkIdx
 		item.ErrorMessage = ""
 		return nil
@@ -1460,6 +1458,11 @@ func (a *Application) handleFileComplete(complete *protocol.FileComplete) error 
 			attrs = append(attrs, "占位路径", updated.ReservedPaths[0])
 		}
 		slog.Info("应用：文件传输已完成", attrs...)
+	}
+	if updated != nil && updated.PendingReplayMode != string(ReplayModeNone) && updated.PendingReplayMode != "" {
+		if err := a.completePendingReplayMode(complete.TransferID); err != nil {
+			return err
+		}
 	}
 	return nil
 }

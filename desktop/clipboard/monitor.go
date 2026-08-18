@@ -212,14 +212,14 @@ func (m *Manager) watchEventDriven(ctx context.Context) {
 			return
 		case <-nativeTick:
 			if !nativeSeeded {
-				m.handleNativeClipboardSnapshot(true)
-				nativeSeeded = true
+				nativeSeeded = m.seedNativeClipboardSnapshot()
 				continue
 			}
 			m.handleNativeClipboardSnapshot(false)
 		case <-fileTicker.C:
 			if skipFirstFileTick {
 				skipFirstFileTick = false
+				m.seedFileClipboardSnapshot()
 				continue
 			}
 			if runtime.GOOS == "linux" && isWayland() {
@@ -234,6 +234,12 @@ func (m *Manager) watchEventDriven(ctx context.Context) {
 			}
 			if skipFirstTextEvent {
 				skipFirstTextEvent = false
+				if len(data) > 0 {
+					m.seedCaptureHash(CaptureData{
+						Payload: string(data),
+						Type:    constants.TypeText,
+					})
+				}
 				continue
 			}
 			if runtime.GOOS == "linux" && isWayland() {
@@ -257,6 +263,12 @@ func (m *Manager) watchEventDriven(ctx context.Context) {
 			}
 			if skipFirstImageEvent {
 				skipFirstImageEvent = false
+				if len(data) > 0 {
+					m.seedCaptureHash(CaptureData{
+						Payload: base64.StdEncoding.EncodeToString(data),
+						Type:    constants.TypeImage,
+					})
+				}
 				continue
 			}
 			if runtime.GOOS == "linux" && isWayland() {
@@ -274,6 +286,25 @@ func (m *Manager) watchEventDriven(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (m *Manager) seedNativeClipboardSnapshot() bool {
+	capture := monitorCaptureCurrent(m)
+	if capture == nil {
+		return false
+	}
+	m.seedCaptureHash(*capture)
+	return true
+}
+
+func (m *Manager) seedFileClipboardSnapshot() bool {
+	paths, _ := getPlatformFilePaths()
+	result, ok := selectFileContent(paths, false)
+	if !ok {
+		return false
+	}
+	m.seedCaptureHash(result)
+	return true
 }
 
 func (m *Manager) handleNativeClipboardSnapshot(seedOnly bool) bool {
@@ -399,9 +430,14 @@ func (m *Manager) handleChange(capture CaptureData) {
 	}
 }
 
-// Paste sets the clipboard content. Updates lastHash to securely prevent self-trigger loop echoing.
-func (m *Manager) Paste(payload string, payloadType string, filename string) {
+// Paste sets the clipboard content. Updates lastHash to prevent self-trigger loop echoing.
+func (m *Manager) Paste(payload string, payloadType string, filename string) error {
+	previous := m.snapshotClipboardWriteState()
 	m.prepareForLocalClipboardWrite(pkgcrypto.XXHash64(payload))
+	restoreOnError := func(err error) error {
+		m.restoreClipboardWriteState(previous)
+		return err
+	}
 
 	switch payloadType {
 	case constants.TypeText:
@@ -416,11 +452,17 @@ func (m *Manager) Paste(payload string, payloadType string, filename string) {
 		if m.notifier != nil {
 			m.notifier("ClipCascade", fmt.Sprintf("收到文本剪贴板更新 (%s)", sizefmt.FormatBytes(int64(len(payload)))))
 		}
+		return nil
 	case constants.TypeImage:
 		data, err := base64.StdEncoding.DecodeString(payload)
 		if err != nil {
 			slog.Warn("剪贴板：无法解码图像", "错误", err)
-			return
+			return restoreOnError(fmt.Errorf("decode clipboard image: %w", err))
+		}
+		data, err = normalizeClipboardImagePNG(data)
+		if err != nil {
+			slog.Warn("剪贴板：无法转换图像为 PNG", "错误", err)
+			return restoreOnError(err)
 		}
 		if err := setPlatformImage(data); err == nil {
 			m.AddExtraSuppression()
@@ -432,22 +474,24 @@ func (m *Manager) Paste(payload string, payloadType string, filename string) {
 		if m.notifier != nil {
 			m.notifier("ClipCascade", fmt.Sprintf("收到图片剪贴板更新 (%s)", sizefmt.FormatBytes(int64(len(data)))))
 		}
+		return nil
 	case constants.TypeFileStub:
 		meta := parseFileStubPayloadWithMeta(payload, filename)
 		slog.Info("剪贴板：收到文件懒加载占位符", "文件数", meta.Count, "总大小", sizefmt.FormatBytes(meta.TotalBytes))
 		if m.notifier != nil {
 			m.notifier("ClipCascade", fmt.Sprintf("收到文件剪贴板更新 (%d 个, %s)", meta.Count, sizefmt.FormatBytes(meta.TotalBytes)))
 		}
+		return nil
 	case constants.TypeFileEager:
 		data, err := base64.StdEncoding.DecodeString(payload)
 		if err != nil {
 			slog.Warn("剪贴板：无法解码文件直传数据", "错误", err)
-			return
+			return restoreOnError(fmt.Errorf("decode eager clipboard file: %w", err))
 		}
 		tempDir := filepath.Join(os.TempDir(), "ClipCascade")
 		if err := os.MkdirAll(tempDir, 0o755); err != nil {
 			slog.Warn("剪贴板：无法创建临时目录", "错误", err)
-			return
+			return restoreOnError(fmt.Errorf("create clipboard temp directory: %w", err))
 		}
 		cleanupOldTempFiles(tempDir, tempFileRetention)
 		safeName := sanitizeFilename(filename)
@@ -457,18 +501,21 @@ func (m *Manager) Paste(payload string, payloadType string, filename string) {
 		destPath := filepath.Join(tempDir, safeName)
 		if err := os.WriteFile(destPath, data, 0o644); err != nil {
 			slog.Warn("剪贴板：无法保存接收文件", "错误", err)
-			return
+			return restoreOnError(fmt.Errorf("write eager clipboard file: %w", err))
 		}
 		if err := setPlatformFilePaths([]string{destPath}); err != nil {
 			slog.Warn("剪贴板：无法设置文件路径到系统剪贴板", "错误", err)
+			return restoreOnError(fmt.Errorf("set eager clipboard file paths: %w", err))
 		}
 		size := sizefmt.FormatBytes(int64(len(data)))
 		slog.Info("剪贴板：已接收并写入文件到临时目录", "文件名", safeName, "大小", size, "路径", destPath)
 		if m.notifier != nil {
 			m.notifier("ClipCascade", fmt.Sprintf("收到文件剪贴板更新 (%s)", size))
 		}
+		return nil
 	default:
 		slog.Warn("剪贴板：不支持的数据类型", "类型", payloadType)
+		return restoreOnError(fmt.Errorf("unsupported clipboard payload type: %s", payloadType))
 	}
 }
 
@@ -488,6 +535,10 @@ func (m *Manager) StageText(text string) error {
 
 func (m *Manager) StageImageFile(path string) error {
 	data, err := clipboardImageBytesFromFile(path)
+	if err != nil {
+		return err
+	}
+	data, err = normalizeClipboardImagePNG(data)
 	if err != nil {
 		return err
 	}
@@ -562,8 +613,7 @@ func (m *Manager) restoreClipboardWriteState(state clipboardWriteState) {
 }
 
 // AddExtraSuppression 增加一次额外的剪贴板变更抑制计数。
-// 用于 simulateAutoPaste 等场景：模拟 Ctrl+V 可能导致目标应用回写剪贴板，
-// 产生额外的变更事件需要被忽略。
+// 用于本进程主动写入剪贴板后可能出现的额外变更事件。
 func (m *Manager) AddExtraSuppression() {
 	m.mu.Lock()
 	m.suppressedEdits++

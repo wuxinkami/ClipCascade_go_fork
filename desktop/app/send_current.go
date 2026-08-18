@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -57,6 +58,10 @@ func (a *Application) SendCurrentClipboard() error {
 }
 
 func (a *Application) sendCapture(capture *clipboard.CaptureData) error {
+	if a.shouldSuppressReplayClipboardCapture(capture) {
+		slog.Debug("application: replay clipboard capture suppressed", "type", capture.Type)
+		return nil
+	}
 	clipData, err := a.buildClipboardDataFromCapture(capture)
 	if err != nil {
 		return err
@@ -67,6 +72,121 @@ func (a *Application) sendCapture(capture *clipboard.CaptureData) error {
 	}
 	a.recordOutgoingClipboardHistory(clipData)
 	return nil
+}
+
+const replayClipboardCaptureSuppressWindow = 5 * time.Second
+
+func (a *Application) rememberReplayClipboardWrite(payloadType string, payload string) {
+	if a == nil {
+		return
+	}
+	a.replayWriteMu.Lock()
+	a.replayWriteType = payloadType
+	a.replayWritePayload = payload
+	a.replayWriteTime = time.Now()
+	a.replayWriteMu.Unlock()
+}
+
+func (a *Application) shouldSuppressReplayClipboardCapture(capture *clipboard.CaptureData) bool {
+	if a == nil || capture == nil {
+		return false
+	}
+	a.replayWriteMu.Lock()
+	defer a.replayWriteMu.Unlock()
+	if a.replayWriteTime.IsZero() || time.Since(a.replayWriteTime) > replayClipboardCaptureSuppressWindow {
+		a.replayWriteType = ""
+		a.replayWritePayload = ""
+		a.replayWriteTime = time.Time{}
+		return false
+	}
+	if replayCaptureMatches(a.replayWriteType, a.replayWritePayload, capture) {
+		a.replayWriteType = ""
+		a.replayWritePayload = ""
+		a.replayWriteTime = time.Time{}
+		return true
+	}
+	return false
+}
+
+func replayCaptureMatches(payloadType string, payload string, capture *clipboard.CaptureData) bool {
+	if capture == nil {
+		return false
+	}
+	switch payloadType {
+	case constants.TypeText:
+		if capture.Type == constants.TypeText {
+			return replayPayloadTextMatches(payload, capture.Payload)
+		}
+		if capture.Type == constants.TypeFileStub {
+			return replayPayloadPathsMatch(payload, capture.Paths)
+		}
+		return false
+	case constants.TypeFileStub:
+		if capture.Type != constants.TypeFileStub {
+			return false
+		}
+		return replayPayloadPathsMatch(payload, capture.Paths)
+	default:
+		return false
+	}
+}
+
+func replayPayloadTextMatches(expected string, actual string) bool {
+	expectedPaths := replayPayloadLines(expected)
+	actualLines := replayPayloadLines(actual)
+	if len(expectedPaths) == 0 || len(actualLines) == 0 {
+		return strings.TrimSpace(expected) == strings.TrimSpace(actual)
+	}
+	if len(expectedPaths) != len(actualLines) {
+		return false
+	}
+	for i := range expectedPaths {
+		if !sameClipboardPath(expectedPaths[i], actualLines[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func replayPayloadPathsMatch(expected string, actual []string) bool {
+	expectedPaths := replayPayloadLines(expected)
+	if len(expectedPaths) != len(actual) {
+		return false
+	}
+	for i := range expectedPaths {
+		if !sameClipboardPath(expectedPaths[i], actual[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func replayPayloadLines(payload string) []string {
+	lines := strings.Split(strings.TrimSpace(payload), "\n")
+	paths := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		paths = append(paths, line)
+	}
+	return paths
+}
+
+func sameClipboardPath(a string, b string) bool {
+	a = normalizeReplayPath(a)
+	b = normalizeReplayPath(b)
+	return a != "" && b != "" && strings.EqualFold(a, b)
+}
+
+func normalizeReplayPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	path = filepath.Clean(path)
+	return strings.ReplaceAll(path, "\\", "/")
 }
 
 func (a *Application) buildClipboardDataFromCapture(capture *clipboard.CaptureData) (*protocol.ClipboardData, error) {

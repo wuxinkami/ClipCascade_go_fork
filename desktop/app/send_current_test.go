@@ -397,3 +397,147 @@ func TestSendCaptureRecordsHistoryWhenStompSendSucceeds(t *testing.T) {
 		t.Fatalf("SourceSessionID = %q, want %q", items[0].SourceSessionID, "session-local")
 	}
 }
+
+func TestHandleLocalClipboardCaptureSuppressesDuplicateImageMonitorEvents(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		cfg:       &config.Config{Username: "desktop-a"},
+		history:   history.NewManager(10),
+		transfers: newTransferManager("session-local"),
+	}
+
+	origDispatch := appDispatchClipboardBodyDetailed
+	var dispatches int
+	appDispatchClipboardBodyDetailed = func(
+		body string,
+		stompConnected func() bool,
+		stompSend func(string) error,
+		p2pSend func(string) int,
+	) (clipboardDispatchResult, error) {
+		dispatches++
+		return clipboardDispatchResult{StompSent: true}, nil
+	}
+	t.Cleanup(func() { appDispatchClipboardBodyDetailed = origDispatch })
+
+	capture := &clipboard.CaptureData{
+		Type:    constants.TypeImage,
+		Payload: "same-image-payload",
+	}
+
+	app.handleLocalClipboardCapture(capture)
+	app.handleLocalClipboardCapture(capture)
+
+	if dispatches != 1 {
+		t.Fatalf("dispatches = %d, want 1", dispatches)
+	}
+	items := app.history.List()
+	if len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+	if items[0].Payload != "same-image-payload" {
+		t.Fatalf("Payload = %q, want %q", items[0].Payload, "same-image-payload")
+	}
+}
+
+func TestHandleLocalClipboardCaptureSuppressesSamePixelsWithDifferentPNGBytes(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		cfg:       &config.Config{Username: "desktop-a"},
+		history:   history.NewManager(10),
+		transfers: newTransferManager("session-local"),
+	}
+
+	origDispatch := appDispatchClipboardBodyDetailed
+	var dispatches int
+	appDispatchClipboardBodyDetailed = func(
+		body string,
+		stompConnected func() bool,
+		stompSend func(string) error,
+		p2pSend func(string) int,
+	) (clipboardDispatchResult, error) {
+		dispatches++
+		return clipboardDispatchResult{StompSent: true}, nil
+	}
+	t.Cleanup(func() { appDispatchClipboardBodyDetailed = origDispatch })
+
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	img.Set(1, 0, color.RGBA{G: 255, A: 255})
+	img.Set(0, 1, color.RGBA{B: 255, A: 255})
+	img.Set(1, 1, color.RGBA{R: 255, G: 255, A: 255})
+
+	var defaultPNG bytes.Buffer
+	if err := png.Encode(&defaultPNG, img); err != nil {
+		t.Fatalf("png.Encode(default) error = %v", err)
+	}
+	var bestSpeedPNG bytes.Buffer
+	encoder := png.Encoder{CompressionLevel: png.BestSpeed}
+	if err := encoder.Encode(&bestSpeedPNG, img); err != nil {
+		t.Fatalf("png.Encode(best speed) error = %v", err)
+	}
+	if bytes.Equal(defaultPNG.Bytes(), bestSpeedPNG.Bytes()) {
+		t.Fatal("test fixture should produce different PNG byte streams")
+	}
+
+	app.handleLocalClipboardCapture(&clipboard.CaptureData{
+		Type:    constants.TypeImage,
+		Payload: base64.StdEncoding.EncodeToString(defaultPNG.Bytes()),
+	})
+	app.handleLocalClipboardCapture(&clipboard.CaptureData{
+		Type:    constants.TypeImage,
+		Payload: base64.StdEncoding.EncodeToString(bestSpeedPNG.Bytes()),
+	})
+
+	if dispatches != 1 {
+		t.Fatalf("dispatches = %d, want 1", dispatches)
+	}
+	if items := app.history.List(); len(items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(items))
+	}
+}
+
+func TestSendCaptureSuppressesReplayPathTextAndFileClipboard(t *testing.T) {
+	app := &Application{
+		sessionID: "session-local",
+		cfg:       &config.Config{Username: "desktop-a"},
+		history:   history.NewManager(10),
+		transfers: newTransferManager("session-local"),
+	}
+
+	origDispatch := appDispatchClipboardBodyDetailed
+	var dispatches int
+	appDispatchClipboardBodyDetailed = func(
+		body string,
+		stompConnected func() bool,
+		stompSend func(string) error,
+		p2pSend func(string) int,
+	) (clipboardDispatchResult, error) {
+		dispatches++
+		return clipboardDispatchResult{StompSent: true}, nil
+	}
+	t.Cleanup(func() { appDispatchClipboardBodyDetailed = origDispatch })
+
+	path := `C:\Users\ADMINI~1\AppData\Local\Temp\ClipCascade\20260622151018.png`
+	app.rememberReplayClipboardWrite(constants.TypeText, path)
+	if err := app.sendCapture(&clipboard.CaptureData{
+		Type:    constants.TypeText,
+		Payload: path + "\r\n",
+	}); err != nil {
+		t.Fatalf("sendCapture(text replay path) error = %v", err)
+	}
+
+	app.rememberReplayClipboardWrite(constants.TypeText, path)
+	if err := app.sendCapture(&clipboard.CaptureData{
+		Type:  constants.TypeFileStub,
+		Paths: []string{path},
+	}); err != nil {
+		t.Fatalf("sendCapture(file replay path) error = %v", err)
+	}
+
+	if dispatches != 0 {
+		t.Fatalf("dispatches = %d, want 0", dispatches)
+	}
+	if items := app.history.List(); len(items) != 0 {
+		t.Fatalf("history items = %d, want 0", len(items))
+	}
+}

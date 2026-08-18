@@ -27,6 +27,10 @@ func (a *Application) triggerPastePlaceholderHistoryItem() {
 	a.triggerReplayWithMode(ReplayModePathPlaceholderPaste)
 }
 
+func (a *Application) triggerPastePlaceholderHistoryItemFromHotkey() {
+	a.triggerPastePlaceholderHistoryItem()
+}
+
 func (a *Application) triggerPasteRealContentHistoryItem() {
 	a.triggerReplayWithMode(ReplayModeSystemClipboardPaste)
 }
@@ -51,6 +55,7 @@ func (a *Application) triggerReplayWithMode(mode ReplayMode) {
 	if err != nil {
 		a.recordControlEvent("clipboard", "Replay active failed: "+err.Error())
 		slog.Warn("应用：replay 失败", "error", err, "mode", mode)
+		notifyFn("ClipCascade", "Clipboard action failed: "+err.Error())
 		return
 	}
 

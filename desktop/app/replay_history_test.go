@@ -183,36 +183,6 @@ func TestReplayHistoryItemReadyFileStagesPathsAndMarksConsumed(t *testing.T) {
 	}
 }
 
-func TestReplayHistoryItemAutoPasteRunsForHotkeyReplay(t *testing.T) {
-	item := &history.HistoryItem{
-		ID:      "text-hotkey",
-		Type:    constants.TypeText,
-		State:   history.StateConsumed,
-		Payload: "hello",
-	}
-
-	autoPasteCalls := 0
-	result, err := replayHistoryItem(item, replayExecutor{
-		paste: func(payload string, payloadType string, filename string) {},
-		autoPaste: func() error {
-			autoPasteCalls++
-			return errors.New("best effort")
-		},
-	}, replayOptions{autoPaste: true})
-	if err != nil {
-		t.Fatalf("replayHistoryItem returned error: %v", err)
-	}
-	if autoPasteCalls != 1 {
-		t.Fatalf("autoPasteCalls = %d, want 1", autoPasteCalls)
-	}
-	if !result.ManualPasteRequired {
-		t.Fatal("result.ManualPasteRequired = false, want true")
-	}
-	if !result.AutoPasteAttempted {
-		t.Fatal("result.AutoPasteAttempted = false, want true")
-	}
-}
-
 func TestReplayHistoryItemRejectsUnsupportedState(t *testing.T) {
 	item := &history.HistoryItem{
 		ID:    "file-offered",
@@ -391,15 +361,12 @@ func TestReplaySharedClipboardItemImagePathPlaceholderUsesReservedPath(t *testin
 
 	var stagedText string
 	origStageText := appStageClipboardText
-	origAutoPaste := appSimulateAutoPaste
 	appStageClipboardText = func(a *Application, text string) error {
 		stagedText = text
 		return nil
 	}
-	appSimulateAutoPaste = func() error { return nil }
 	t.Cleanup(func() {
 		appStageClipboardText = origStageText
-		appSimulateAutoPaste = origAutoPaste
 	})
 
 	result, err := app.ReplaySharedClipboardItem(ReplayModePathPlaceholderPaste)
@@ -417,14 +384,14 @@ func TestReplaySharedClipboardItemImagePathPlaceholderUsesReservedPath(t *testin
 	}
 }
 
-func TestReplaySharedClipboardItemImagePathPlaceholderAutoPastes(t *testing.T) {
+func TestReplaySharedClipboardItemImagePathPlaceholderOnlyCopiesPath(t *testing.T) {
 	manager := history.NewManager(10)
 	tmpFile := testReplayPath(t, "image-ready.png")
 	if err := os.WriteFile(tmpFile, []byte("fake-png"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	item := &history.HistoryItem{
-		ID:            "image-ready-autopaste",
+		ID:            "image-ready-path-only",
 		Type:          constants.TypeImage,
 		State:         history.StateReady,
 		Payload:       "aGVsbG8=",
@@ -438,20 +405,13 @@ func TestReplaySharedClipboardItemImagePathPlaceholderAutoPastes(t *testing.T) {
 	app.setSharedClipboardHistoryItem(item.ID)
 
 	origStageText := appStageClipboardText
-	origAutoPaste := appSimulateAutoPaste
 	stagedText := ""
-	autoPasteCalls := 0
 	appStageClipboardText = func(a *Application, text string) error {
 		stagedText = text
 		return nil
 	}
-	appSimulateAutoPaste = func() error {
-		autoPasteCalls++
-		return nil
-	}
 	t.Cleanup(func() {
 		appStageClipboardText = origStageText
-		appSimulateAutoPaste = origAutoPaste
 	})
 
 	result, err := app.ReplaySharedClipboardItem(ReplayModePathPlaceholderPaste)
@@ -461,17 +421,215 @@ func TestReplaySharedClipboardItemImagePathPlaceholderAutoPastes(t *testing.T) {
 	if stagedText != tmpFile {
 		t.Fatalf("stagedText = %q, want %q", stagedText, tmpFile)
 	}
-	if autoPasteCalls != 1 {
-		t.Fatalf("autoPasteCalls = %d, want 1", autoPasteCalls)
+	if result.Mode != ReplayModePathPlaceholderPaste {
+		t.Fatalf("result.Mode = %q, want %q", result.Mode, ReplayModePathPlaceholderPaste)
 	}
-	if !result.AutoPasteRequested || !result.AutoPasteAttempted {
-		t.Fatalf("result = %#v, want auto paste requested and attempted", result)
+	if result.Message != "Copied placeholder path to clipboard" {
+		t.Fatalf("result.Message = %q, want %q", result.Message, "Copied placeholder path to clipboard")
 	}
-	if result.ManualPasteRequired {
-		t.Fatalf("result.ManualPasteRequired = %v, want false", result.ManualPasteRequired)
+}
+
+func TestReplaySharedClipboardItemLocalOriginPlaceholderStagesPath(t *testing.T) {
+	manager := history.NewManager(10)
+	item := &history.HistoryItem{
+		ID:              "local-image",
+		Type:            constants.TypeImage,
+		State:           history.StateReady,
+		Payload:         "aGVsbG8=",
+		SourceSessionID: "session-local",
+		SourceDevice:    "desktop-a",
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
 	}
-	if result.Message != "Pasted placeholder path" {
-		t.Fatalf("result.Message = %q, want %q", result.Message, "Pasted placeholder path")
+	manager.AddItem(item)
+	app := &Application{
+		sessionID: "session-local",
+		history:   manager,
+		clip:      &clipboard.Manager{},
+	}
+	app.setSharedClipboardHistoryItem(item.ID)
+
+	origStageText := appStageClipboardText
+	var stagedText string
+	appStageClipboardText = func(a *Application, text string) error {
+		stagedText = text
+		return nil
+	}
+	t.Cleanup(func() {
+		appStageClipboardText = origStageText
+	})
+
+	result, err := app.ReplaySharedClipboardItem(ReplayModePathPlaceholderPaste)
+	if err != nil {
+		t.Fatalf("ReplaySharedClipboardItem() error = %v", err)
+	}
+	if stagedText == "" {
+		t.Fatal("local origin placeholder replay should stage clipboard text")
+	}
+	if result.Mode != ReplayModePathPlaceholderPaste {
+		t.Fatalf("result.Mode = %q, want %q", result.Mode, ReplayModePathPlaceholderPaste)
+	}
+	if result.Message != "Copied placeholder path to clipboard" {
+		t.Fatalf("result.Message = %q", result.Message)
+	}
+}
+
+func TestReplaySharedClipboardItemLocalOriginRealImageStagesFile(t *testing.T) {
+	manager := history.NewManager(10)
+	tmpFile := testReplayPath(t, "local-image-real.png")
+	if err := os.WriteFile(tmpFile, []byte("fake-png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := &history.HistoryItem{
+		ID:              "local-image-real",
+		Type:            constants.TypeImage,
+		State:           history.StateReady,
+		Payload:         "aGVsbG8=",
+		LocalPaths:      []string{tmpFile},
+		ReservedPaths:   []string{tmpFile},
+		SourceSessionID: "session-local",
+		SourceDevice:    "desktop-a",
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+	}
+	manager.AddItem(item)
+	app := &Application{
+		sessionID: "session-local",
+		history:   manager,
+		clip:      &clipboard.Manager{},
+	}
+	app.setSharedClipboardHistoryItem(item.ID)
+
+	origStageFiles := appStageClipboardFiles
+	var stagedPaths []string
+	appStageClipboardFiles = func(a *Application, paths []string) error {
+		stagedPaths = append([]string(nil), paths...)
+		return nil
+	}
+	t.Cleanup(func() {
+		appStageClipboardFiles = origStageFiles
+	})
+
+	result, err := app.ReplaySharedClipboardItem(ReplayModeSystemClipboardPaste)
+	if err != nil {
+		t.Fatalf("ReplaySharedClipboardItem() error = %v", err)
+	}
+	if len(stagedPaths) != 1 || stagedPaths[0] != tmpFile {
+		t.Fatalf("stagedPaths = %#v, want [%q]", stagedPaths, tmpFile)
+	}
+	if result.Mode != ReplayModeSystemClipboardPaste {
+		t.Fatalf("result.Mode = %q, want %q", result.Mode, ReplayModeSystemClipboardPaste)
+	}
+}
+
+func TestReplayPathClipboardCaptureDoesNotReplaceSharedImage(t *testing.T) {
+	manager := history.NewManager(10)
+	tmpFile := testReplayPath(t, "image-ready.png")
+	if err := os.WriteFile(tmpFile, []byte("fake-png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := &history.HistoryItem{
+		ID:            "image-ready-clipboard-only",
+		Type:          constants.TypeImage,
+		State:         history.StateReady,
+		Payload:       "aGVsbG8=",
+		LocalPaths:    []string{tmpFile},
+		ReservedPaths: []string{tmpFile},
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	manager.AddItem(item)
+	app := &Application{
+		history:   manager,
+		clip:      &clipboard.Manager{},
+		transfers: newTransferManager("session-local"),
+	}
+	app.setSharedClipboardHistoryItem(item.ID)
+
+	origStageText := appStageClipboardText
+	stageCalls := 0
+	appStageClipboardText = func(a *Application, text string) error {
+		stageCalls++
+		return nil
+	}
+	origSendClipboardData := appDispatchClipboardBodyDetailed
+	sendCalls := 0
+	appDispatchClipboardBodyDetailed = func(
+		body string,
+		stompConnected func() bool,
+		stompSend func(string) error,
+		p2pSend func(string) int,
+	) (clipboardDispatchResult, error) {
+		sendCalls++
+		return clipboardDispatchResult{StompSent: true}, nil
+	}
+	t.Cleanup(func() {
+		appStageClipboardText = origStageText
+		appDispatchClipboardBodyDetailed = origSendClipboardData
+	})
+
+	if _, err := app.ReplaySharedClipboardItem(ReplayModePathPlaceholderPaste); err != nil {
+		t.Fatalf("ReplaySharedClipboardItem() error = %v", err)
+	}
+	if stageCalls != 1 {
+		t.Fatalf("stageCalls = %d, want 1", stageCalls)
+	}
+
+	app.handleLocalClipboardCapture(&clipboard.CaptureData{
+		Type:    constants.TypeText,
+		Payload: tmpFile,
+	})
+	if sendCalls != 0 {
+		t.Fatalf("sendCalls = %d, want 0", sendCalls)
+	}
+	resolved := app.resolveSharedReplayItem()
+	if resolved == nil || resolved.ID != item.ID || resolved.Type != constants.TypeImage {
+		t.Fatalf("resolved = %#v, want original image item", resolved)
+	}
+}
+
+func TestReplayRealImageClipboardDoesNotAutoPaste(t *testing.T) {
+	manager := history.NewManager(10)
+	tmpFile := testReplayPath(t, "image-real-clipboard-only.png")
+	if err := os.WriteFile(tmpFile, []byte("fake-png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := &history.HistoryItem{
+		ID:            "image-real-clipboard-only",
+		Type:          constants.TypeImage,
+		State:         history.StateReady,
+		Payload:       "aGVsbG8=",
+		LocalPaths:    []string{tmpFile},
+		ReservedPaths: []string{tmpFile},
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	manager.AddItem(item)
+	app := &Application{history: manager, clip: &clipboard.Manager{}}
+	app.setSharedClipboardHistoryItem(item.ID)
+
+	origStageFiles := appStageClipboardFiles
+	var stagedPaths []string
+	appStageClipboardFiles = func(a *Application, paths []string) error {
+		stagedPaths = append([]string(nil), paths...)
+		return nil
+	}
+	t.Cleanup(func() {
+		appStageClipboardFiles = origStageFiles
+	})
+
+	result, err := app.ReplaySharedClipboardItem(ReplayModeSystemClipboardPaste)
+	if err != nil {
+		t.Fatalf("ReplaySharedClipboardItem() error = %v", err)
+	}
+	if len(stagedPaths) != 1 || stagedPaths[0] != tmpFile {
+		t.Fatalf("stagedPaths = %#v, want [%q]", stagedPaths, tmpFile)
+	}
+	if result.Mode != ReplayModeSystemClipboardPaste {
+		t.Fatalf("result.Mode = %q, want %q", result.Mode, ReplayModeSystemClipboardPaste)
+	}
+	if result.Message != "Copied real content to clipboard" {
+		t.Fatalf("result.Message = %q, want %q", result.Message, "Copied real content to clipboard")
 	}
 }
 
@@ -493,18 +651,12 @@ func TestReplaySharedClipboardItemImagePathPlaceholderStartsBackgroundMaterializ
 
 	expectedPath := filepath.Join(replayTempRootDir(), "1.jpg")
 	stagedText := ""
-	autoPasteCalls := 0
 	backgroundCalls := 0
 
 	origStageText := appStageClipboardText
-	origAutoPaste := appSimulateAutoPaste
 	origStartImageMaterialize := appStartImageMaterialize
 	appStageClipboardText = func(a *Application, text string) error {
 		stagedText = text
-		return nil
-	}
-	appSimulateAutoPaste = func() error {
-		autoPasteCalls++
 		return nil
 	}
 	appStartImageMaterialize = func(a *Application, got *history.HistoryItem) {
@@ -521,7 +673,6 @@ func TestReplaySharedClipboardItemImagePathPlaceholderStartsBackgroundMaterializ
 	}
 	t.Cleanup(func() {
 		appStageClipboardText = origStageText
-		appSimulateAutoPaste = origAutoPaste
 		appStartImageMaterialize = origStartImageMaterialize
 	})
 
@@ -531,9 +682,6 @@ func TestReplaySharedClipboardItemImagePathPlaceholderStartsBackgroundMaterializ
 	}
 	if stagedText != expectedPath {
 		t.Fatalf("stagedText = %q, want %q", stagedText, expectedPath)
-	}
-	if autoPasteCalls != 1 {
-		t.Fatalf("autoPasteCalls = %d, want 1", autoPasteCalls)
 	}
 	if backgroundCalls != 1 {
 		t.Fatalf("backgroundCalls = %d, want 1", backgroundCalls)
@@ -551,8 +699,8 @@ func TestReplaySharedClipboardItemImagePathPlaceholderStartsBackgroundMaterializ
 	if len(stored.ReservedPaths) != 1 || stored.ReservedPaths[0] != expectedPath {
 		t.Fatalf("stored.ReservedPaths = %#v, want [%q]", stored.ReservedPaths, expectedPath)
 	}
-	if result.Message != "Pasted placeholder path" {
-		t.Fatalf("result.Message = %q, want %q", result.Message, "Pasted placeholder path")
+	if result.Message != "Copied placeholder path to clipboard" {
+		t.Fatalf("result.Message = %q, want %q", result.Message, "Copied placeholder path to clipboard")
 	}
 }
 
@@ -580,7 +728,7 @@ func TestReplaySharedClipboardItemPathModeRejectsFileStub(t *testing.T) {
 	}
 }
 
-func TestReplaySharedClipboardItemRealModeOfferedFileDoesNotSetPendingReplayMode(t *testing.T) {
+func TestReplaySharedClipboardItemRealModeOfferedFileStoresPendingReplayMode(t *testing.T) {
 	manager := history.NewManager(10)
 	item := &history.HistoryItem{
 		ID:         "file-offered-real",
@@ -616,8 +764,8 @@ func TestReplaySharedClipboardItemRealModeOfferedFileDoesNotSetPendingReplayMode
 	if updated == nil {
 		t.Fatal("updated item not found")
 	}
-	if updated.PendingReplayMode != string(ReplayModeNone) {
-		t.Fatalf("PendingReplayMode = %q, want %q", updated.PendingReplayMode, ReplayModeNone)
+	if updated.PendingReplayMode != string(ReplayModeSystemClipboardPaste) {
+		t.Fatalf("PendingReplayMode = %q, want %q", updated.PendingReplayMode, ReplayModeSystemClipboardPaste)
 	}
 }
 
@@ -666,8 +814,8 @@ func TestReplaySharedClipboardItemRealModeSelfLoopbackFileUsesReceiveFlow(t *tes
 	if updated == nil {
 		t.Fatal("updated item not found")
 	}
-	if updated.PendingReplayMode != string(ReplayModeNone) {
-		t.Fatalf("PendingReplayMode = %q, want %q", updated.PendingReplayMode, ReplayModeNone)
+	if updated.PendingReplayMode != string(ReplayModeSystemClipboardPaste) {
+		t.Fatalf("PendingReplayMode = %q, want %q", updated.PendingReplayMode, ReplayModeSystemClipboardPaste)
 	}
 }
 
@@ -694,19 +842,12 @@ func TestReplaySharedClipboardItemImageRealClipboardUsesFilePaths(t *testing.T) 
 
 	var stagedPaths []string
 	origStageFiles := appStageClipboardFiles
-	origAutoPaste := appSimulateAutoPaste
-	autoPasteCalls := 0
 	appStageClipboardFiles = func(a *Application, paths []string) error {
 		stagedPaths = append([]string(nil), paths...)
 		return nil
 	}
-	appSimulateAutoPaste = func() error {
-		autoPasteCalls++
-		return nil
-	}
 	t.Cleanup(func() {
 		appStageClipboardFiles = origStageFiles
-		appSimulateAutoPaste = origAutoPaste
 	})
 
 	result, err := app.ReplaySharedClipboardItem(ReplayModeSystemClipboardPaste)
@@ -719,17 +860,8 @@ func TestReplaySharedClipboardItemImageRealClipboardUsesFilePaths(t *testing.T) 
 	if result.Mode != ReplayModeSystemClipboardPaste {
 		t.Fatalf("result.Mode = %q, want %q", result.Mode, ReplayModeSystemClipboardPaste)
 	}
-	if autoPasteCalls != 1 {
-		t.Fatalf("autoPasteCalls = %d, want 1", autoPasteCalls)
-	}
-	if !result.AutoPasteRequested || !result.AutoPasteAttempted {
-		t.Fatalf("result = %#v, want auto paste requested and attempted", result)
-	}
-	if result.ManualPasteRequired {
-		t.Fatalf("result.ManualPasteRequired = %v, want false", result.ManualPasteRequired)
-	}
-	if result.Message != "Pasted real image file" {
-		t.Fatalf("result.Message = %q, want %q", result.Message, "Pasted real image file")
+	if result.Message != "Copied real content to clipboard" {
+		t.Fatalf("result.Message = %q, want %q", result.Message, "Copied real content to clipboard")
 	}
 	if stored := manager.GetByID(item.ID); stored == nil || stored.State != history.StateConsumed {
 		t.Fatalf("stored state = %#v, want consumed", stored)
@@ -771,15 +903,12 @@ func TestReplaySharedClipboardItemRealModeSelfLoopbackReadyFileUsesLocalTmpPaths
 
 	var stagedPaths []string
 	origStageFiles := appStageClipboardFiles
-	origAutoPaste := appSimulateAutoPaste
 	appStageClipboardFiles = func(a *Application, paths []string) error {
 		stagedPaths = append([]string(nil), paths...)
 		return nil
 	}
-	appSimulateAutoPaste = func() error { return nil }
 	t.Cleanup(func() {
 		appStageClipboardFiles = origStageFiles
-		appSimulateAutoPaste = origAutoPaste
 	})
 
 	result, err := app.ReplaySharedClipboardItem(ReplayModeSystemClipboardPaste)
@@ -828,26 +957,16 @@ func TestReplaySharedClipboardItemRealModeFileCopiesToClipboardWithoutAutoPaste(
 	app.setSharedClipboardHistoryItem(item.ID)
 
 	origStageFiles := appStageClipboardFiles
-	autoPasteCalls := 0
-	origAutoPaste := appSimulateAutoPaste
 	appStageClipboardFiles = func(a *Application, paths []string) error {
-		return nil
-	}
-	appSimulateAutoPaste = func() error {
-		autoPasteCalls++
 		return nil
 	}
 	t.Cleanup(func() {
 		appStageClipboardFiles = origStageFiles
-		appSimulateAutoPaste = origAutoPaste
 	})
 
 	result, err := app.ReplaySharedClipboardItem(ReplayModeSystemClipboardPaste)
 	if err != nil {
 		t.Fatalf("ReplaySharedClipboardItem() error = %v", err)
-	}
-	if autoPasteCalls != 0 {
-		t.Fatalf("autoPasteCalls = %d, want 0", autoPasteCalls)
 	}
 	if result.Message != "Copied real content to clipboard" {
 		t.Fatalf("result.Message = %q, want %q", result.Message, "Copied real content to clipboard")
@@ -873,7 +992,6 @@ func TestStageRealClipboardContentWaitsForWaylandClipboardSettle(t *testing.T) {
 	origStageFiles := appStageClipboardFiles
 	origIsWayland := appIsWaylandSession
 	origSleep := appSleep
-	origAutoPaste := appSimulateAutoPaste
 	appStageClipboardFiles = func(a *Application, paths []string) error {
 		steps = append(steps, "stage")
 		return nil
@@ -883,15 +1001,10 @@ func TestStageRealClipboardContentWaitsForWaylandClipboardSettle(t *testing.T) {
 		slept = delay
 		steps = append(steps, "sleep")
 	}
-	appSimulateAutoPaste = func() error {
-		steps = append(steps, "autopaste")
-		return nil
-	}
 	t.Cleanup(func() {
 		appStageClipboardFiles = origStageFiles
 		appIsWaylandSession = origIsWayland
 		appSleep = origSleep
-		appSimulateAutoPaste = origAutoPaste
 	})
 
 	result, err := app.stageRealClipboardContent(item)
@@ -901,11 +1014,11 @@ func TestStageRealClipboardContentWaitsForWaylandClipboardSettle(t *testing.T) {
 	if slept != waylandFileClipboardSettleWait {
 		t.Fatalf("slept = %s, want %s", slept, waylandFileClipboardSettleWait)
 	}
-	if len(steps) != 3 || steps[0] != "stage" || steps[1] != "sleep" || steps[2] != "autopaste" {
-		t.Fatalf("steps = %#v, want [stage sleep autopaste]", steps)
+	if len(steps) != 2 || steps[0] != "stage" || steps[1] != "sleep" {
+		t.Fatalf("steps = %#v, want [stage sleep]", steps)
 	}
-	if !result.AutoPasteRequested || !result.AutoPasteAttempted || result.ManualPasteRequired {
-		t.Fatalf("result = %#v, want successful auto paste", result)
+	if result.Mode != ReplayModeSystemClipboardPaste {
+		t.Fatalf("result.Mode = %q, want %q", result.Mode, ReplayModeSystemClipboardPaste)
 	}
 }
 
@@ -939,7 +1052,6 @@ func TestReplaySharedClipboardItemConsumedImageRealClipboardStableAcrossConcurre
 	)
 	origStageFiles := appStageClipboardFiles
 	origIsWayland := appIsWaylandSession
-	origAutoPaste := appSimulateAutoPaste
 	appStageClipboardFiles = func(a *Application, paths []string) error {
 		mu.Lock()
 		stageCalls++
@@ -948,11 +1060,9 @@ func TestReplaySharedClipboardItemConsumedImageRealClipboardStableAcrossConcurre
 		return nil
 	}
 	appIsWaylandSession = func() bool { return false }
-	appSimulateAutoPaste = func() error { return nil }
 	t.Cleanup(func() {
 		appStageClipboardFiles = origStageFiles
 		appIsWaylandSession = origIsWayland
-		appSimulateAutoPaste = origAutoPaste
 	})
 
 	errCh := make(chan error, 2)
